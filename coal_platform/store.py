@@ -5,6 +5,19 @@ from datetime import UTC, date, datetime
 from threading import RLock
 from uuid import uuid4
 
+from coal_platform.rule_engine import (
+    DEFAULT_RULE_PACKS,
+    DEFAULT_RULE_STAGE_BY_CODE,
+    EXECUTOR_PARAMETER_SCHEMAS,
+    FIXED_AUDIT_STAGE_ORDER,
+    RuleConfigurationError,
+    evaluate_trigger_condition,
+    validate_dependency_graph,
+    validate_parameters,
+    validate_stage_code,
+    validate_trigger_condition,
+)
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -66,10 +79,14 @@ def _clause_payload(payload: dict) -> dict:
 def next_version_no(version_numbers: list[str]) -> str:
     if not version_numbers:
         return "v1.0"
-    latest = version_numbers[-1].removeprefix("v")
-    parts = latest.split(".")
-    if len(parts) == 2 and all(part.isdigit() for part in parts):
-        return f"v{parts[0]}.{int(parts[1]) + 1}"
+    parsed = []
+    for version_no in version_numbers:
+        parts = version_no.removeprefix("v").split(".")
+        if len(parts) == 2 and all(part.isdigit() for part in parts):
+            parsed.append((int(parts[0]), int(parts[1])))
+    if parsed:
+        major, minor = max(parsed)
+        return f"v{major}.{minor + 1}"
     return f"v{len(version_numbers) + 1}.0"
 
 
@@ -85,6 +102,7 @@ class DemoStore:
         self.standards: dict[str, dict] = {}
         self.standard_parse_revisions: dict[str, list[dict]] = {}
         self.rules: dict[str, dict] = {}
+        self.rule_packs: dict[str, dict] = {}
         self.executors: dict[str, dict] = {}
         self.reports: dict[str, dict] = {}
         self.issues: dict[str, dict] = {}
@@ -132,6 +150,33 @@ class DemoStore:
             "rule_3": self._rule("STANDARD_VERSION_STATUS", "引用标准有效性检查", "standard_status", "一般"),
             "rule_4": self._rule("AI_EVIDENCE_REQUIRED", "AI 判断必须具备标准依据", "evidence_required", "提示"),
         }
+        self.rule_packs = {}
+        for pack_config in DEFAULT_RULE_PACKS:
+            pack_id = str(uuid4())
+            members = []
+            for order_no, rule_code in enumerate(pack_config["rule_codes"], start=1):
+                rule = next(item for item in self.rules.values() if item["rule_code"] == rule_code)
+                version = rule["versions"][0]
+                members.append(
+                    {
+                        "id": str(uuid4()),
+                        "rule_pack_id": pack_id,
+                        "rule_version_id": version["id"],
+                        "rule_code": rule_code,
+                        "version_no": version["version_no"],
+                        "order_no": order_no,
+                        "enabled": True,
+                    }
+                )
+            self.rule_packs[pack_id] = {
+                "id": pack_id,
+                "pack_code": pack_config["pack_code"],
+                "pack_name": pack_config["pack_name"],
+                "stage_code": pack_config["stage_code"],
+                "trigger_condition": deepcopy(pack_config["trigger_condition"]),
+                "status": "published",
+                "items": members,
+            }
 
         self.tasks = {
             "task_1": self._task(
@@ -308,7 +353,10 @@ class DemoStore:
             "id": str(uuid4()),
             "executor_definition_id": definition_id,
             "version_no": version,
-            "parameter_schema": {"type": "object", "description": parameter_note},
+            "parameter_schema": {
+                **deepcopy(EXECUTOR_PARAMETER_SCHEMAS.get(code, {"type": "object"})),
+                "description": parameter_note,
+            },
             "result_schema": {"type": "object"},
             "default_timeout_seconds": 60,
             "supports_batch": False,
@@ -379,7 +427,7 @@ class DemoStore:
             "parameters": {},
             "scope_files": [],
             "priority": 100,
-            "stage_code": "standard_compliance",
+            "stage_code": DEFAULT_RULE_STAGE_BY_CODE.get(code, "standard_compliance"),
             "dependency_rule_codes": [],
             "task_override_allowed": True,
             "status": "published",
@@ -597,7 +645,11 @@ class DemoStore:
                 record = {
                     "id": str(uuid4()),
                     "file_name": item["file_name"],
+                    "file_type": item.get("file_type") or "other",
                     "content_type": item.get("content_type"),
+                    "file_size": item.get("file_size", 0),
+                    "sha256": item.get("sha256"),
+                    "storage_key": item["storage_key"],
                     "status": "uploaded",
                     "version_no": 1,
                 }
@@ -858,6 +910,9 @@ class DemoStore:
             _key, rule = self._find_record(self.rules, rule_id)
             if not rule:
                 return None
+            stage_code = payload.get("stage_code", "standard_compliance")
+            if errors := validate_stage_code(stage_code):
+                raise RuleConfigurationError(errors)
             executor = self.executors.get(rule["executor_code"])
             if not executor:
                 return None
@@ -893,12 +948,50 @@ class DemoStore:
             rule.setdefault("versions", []).append(version)
             return deepcopy(version)
 
+    def _rule_validation_errors(self, version: dict) -> list[dict]:
+        rule = next(
+            (item for item in self.rules.values() if item["id"] == version["rule_definition_id"]),
+            None,
+        )
+        if not rule:
+            return [{"code": "RULE_NOT_FOUND", "message": "rule definition not found", "path": "rule_definition_id"}]
+        executor = self.executors.get(rule["executor_code"])
+        executor_version = next(
+            (item for item in (executor or {}).get("versions", []) if item["id"] == version["executor_version_id"]),
+            None,
+        )
+        errors = validate_stage_code(version["stage_code"])
+        if not executor_version or executor_version.get("status") != "published":
+            errors.append({"code": "EXECUTOR_VERSION_UNAVAILABLE", "message": "executor version is not published", "path": "executor_version_id"})
+        else:
+            errors.extend(validate_parameters(version.get("parameters") or {}, executor_version.get("parameter_schema") or {}))
+        graph = {}
+        known_rule_codes = set()
+        for item in self.rules.values():
+            published = next((candidate for candidate in item.get("versions", []) if candidate.get("status") == "published"), None)
+            if published:
+                graph[item["rule_code"]] = list(published.get("dependency_rule_codes") or [])
+                known_rule_codes.add(item["rule_code"])
+        graph[rule["rule_code"]] = list(version.get("dependency_rule_codes") or [])
+        known_rule_codes.add(rule["rule_code"])
+        errors.extend(validate_dependency_graph(graph, known_rule_codes))
+        return errors
+
+    def validate_rule_version(self, version_id: str) -> dict | None:
+        version = self.get_rule_version(version_id)
+        if not version:
+            return None
+        errors = self._rule_validation_errors(version)
+        return {"valid": not errors, "rule_version_id": version_id, "errors": errors}
+
     def publish_rule_version(self, version_id: str, payload: dict) -> dict | None:
         with self._lock:
             for rule in self.rules.values():
                 for version in rule.get("versions", []):
                     if version.get("id") != version_id:
                         continue
+                    if errors := self._rule_validation_errors(version):
+                        raise RuleConfigurationError(errors)
                     for previous in rule["versions"]:
                         if previous is not version and previous.get("status") == "published":
                             previous["status"] = "archived"
@@ -914,6 +1007,184 @@ class DemoStore:
     def list_executor_versions(self, executor_code: str) -> list[dict] | None:
         executor = self.executors.get(executor_code)
         return deepcopy(executor.get("versions", [])) if executor else None
+
+    @staticmethod
+    def _rule_pack_dict(pack: dict) -> dict:
+        item = deepcopy(pack)
+        item["source_type"] = item.get("trigger_condition", {}).get("source_type", "global")
+        return item
+
+    def list_rule_packs(self) -> list[dict]:
+        packs = sorted(
+            self.rule_packs.values(),
+            key=lambda item: (FIXED_AUDIT_STAGE_ORDER[item["stage_code"]], item["pack_code"]),
+        )
+        return [self._rule_pack_dict(item) for item in packs]
+
+    def _rule_versions_by_id(self) -> dict[str, dict]:
+        return {
+            version["id"]: {**deepcopy(version), "rule_code": rule["rule_code"], "rule_name": rule["rule_name"], "is_mandatory": rule.get("is_mandatory", False)}
+            for rule in self.rules.values()
+            for version in rule.get("versions", [])
+        }
+
+    def _validate_rule_pack_payload(self, payload: dict, member_ids: list[str]) -> list[dict]:
+        errors = validate_stage_code(payload.get("stage_code", ""))
+        errors.extend(validate_trigger_condition(payload.get("trigger_condition") or {}))
+        if payload.get("status", "draft") not in {"draft", "published", "disabled", "archived"}:
+            errors.append({"code": "INVALID_PACK_STATUS", "message": "unknown rule pack status", "path": "status"})
+        if payload.get("status") == "published" and not member_ids:
+            errors.append({"code": "EMPTY_RULE_PACK", "message": "published rule pack must contain rules", "path": "rule_version_ids"})
+        versions = self._rule_versions_by_id()
+        for index, version_id in enumerate(member_ids):
+            version = versions.get(version_id)
+            if not version:
+                errors.append({"code": "RULE_VERSION_NOT_FOUND", "message": "rule version not found", "path": f"rule_version_ids.{index}"})
+                continue
+            if version.get("status") != "published":
+                errors.append({"code": "RULE_VERSION_NOT_PUBLISHED", "message": "rule pack only accepts published rule versions", "path": f"rule_version_ids.{index}"})
+            if version.get("stage_code") != payload.get("stage_code"):
+                errors.append({"code": "STAGE_MISMATCH", "message": "rule version stage does not match rule pack stage", "path": f"rule_version_ids.{index}"})
+        return errors
+
+    def create_rule_pack(self, payload: dict) -> dict | None:
+        with self._lock:
+            if any(item.get("pack_code") == payload["pack_code"] for item in self.rule_packs.values()):
+                return None
+            member_ids = payload.get("rule_version_ids") or []
+            if errors := self._validate_rule_pack_payload(payload, member_ids):
+                raise RuleConfigurationError(errors)
+            pack_id = str(uuid4())
+            versions = self._rule_versions_by_id()
+            self.rule_packs[pack_id] = {
+                "id": pack_id,
+                "pack_code": payload["pack_code"],
+                "pack_name": payload["pack_name"],
+                "stage_code": payload["stage_code"],
+                "trigger_condition": deepcopy(payload.get("trigger_condition") or {}),
+                "status": payload.get("status", "draft"),
+                "items": [
+                    {
+                        "id": str(uuid4()),
+                        "rule_pack_id": pack_id,
+                        "rule_version_id": version_id,
+                        "rule_code": versions[version_id]["rule_code"],
+                        "version_no": versions[version_id]["version_no"],
+                        "order_no": index + 1,
+                        "enabled": True,
+                    }
+                    for index, version_id in enumerate(member_ids)
+                ],
+            }
+            return self._rule_pack_dict(self.rule_packs[pack_id])
+
+    def update_rule_pack(self, pack_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            _key, pack = self._find_record(self.rule_packs, pack_id)
+            if not pack:
+                return None
+            updated = deepcopy(pack)
+            for key in ("pack_name", "stage_code", "trigger_condition", "status"):
+                if payload.get(key) is not None:
+                    updated[key] = payload[key]
+            member_ids = payload.get("rule_version_ids")
+            if member_ids is None:
+                member_ids = [item["rule_version_id"] for item in updated.get("items", [])]
+            if errors := self._validate_rule_pack_payload(updated, member_ids):
+                raise RuleConfigurationError(errors)
+            versions = self._rule_versions_by_id()
+            updated["items"] = [
+                {
+                    "id": str(uuid4()),
+                    "rule_pack_id": updated["id"],
+                    "rule_version_id": version_id,
+                    "rule_code": versions[version_id]["rule_code"],
+                    "version_no": versions[version_id]["version_no"],
+                    "order_no": index + 1,
+                    "enabled": True,
+                }
+                for index, version_id in enumerate(member_ids)
+            ]
+            pack.clear()
+            pack.update(updated)
+            return self._rule_pack_dict(pack)
+
+    def _find_round(self, round_id: str) -> tuple[dict | None, dict | None]:
+        for task in self.tasks.values():
+            for round_item in task.get("rounds", []):
+                if round_item.get("id") == round_id:
+                    return task, round_item
+        return None, None
+
+    def list_round_rules(self, round_id: str) -> list[dict] | None:
+        _task, round_item = self._find_round(round_id)
+        return deepcopy(round_item.get("rules", [])) if round_item else None
+
+    def assemble_round_rules(self, round_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            task, round_item = self._find_round(round_id)
+            if not task or not round_item:
+                return None
+            if round_item.get("rules"):
+                rules = deepcopy(round_item["rules"])
+                return {"round_id": round_id, "snapshot_no": rules[0]["snapshot_no"], "locked": True, "rules": rules}
+            selected_pack_ids = set(payload.get("rule_pack_ids") or [])
+            missing_pack_ids = selected_pack_ids - set(self.rule_packs)
+            if missing_pack_ids:
+                raise RuleConfigurationError(
+                    [
+                        {"code": "RULE_PACK_NOT_FOUND", "message": f"rule pack not found: {pack_id}", "path": "rule_pack_ids"}
+                        for pack_id in sorted(missing_pack_ids)
+                    ]
+                )
+            packs = [item for item in self.rule_packs.values() if item.get("status") == "published"]
+            if selected_pack_ids:
+                packs = [item for item in packs if item["id"] in selected_pack_ids]
+            file_types = [item.get("file_type", "other") for item in task.get("files", [])]
+            confirmed_standard_count = sum(1 for item in round_item.get("standards", []) if isinstance(item, dict) and item.get("status") == "confirmed")
+            candidate_rules = []
+            skipped_packs = []
+            versions = self._rule_versions_by_id()
+            for pack in packs:
+                enabled, reason = evaluate_trigger_condition(
+                    pack.get("trigger_condition") or {}, file_types=file_types, confirmed_standard_count=confirmed_standard_count
+                )
+                if not enabled:
+                    skipped_packs.append({"pack_code": pack["pack_code"], "reason": reason})
+                    continue
+                for member in sorted(pack.get("items", []), key=lambda item: item["order_no"]):
+                    if not member.get("enabled") or member["rule_version_id"] in {
+                        item["id"] for item in candidate_rules
+                    }:
+                        continue
+                    version = versions.get(member["rule_version_id"])
+                    if not version:
+                        continue
+                    candidate_rules.append({**version, "source_type": pack.get("trigger_condition", {}).get("source_type", "global"), "enable_reason": reason, "pack_code": pack["pack_code"]})
+            candidate_rules.sort(key=lambda item: (FIXED_AUDIT_STAGE_ORDER[item["stage_code"]], item["priority"], item["rule_code"]))
+            snapshot_no = f"RULE-SNAPSHOT-R{round_item.get('round_no', 1)}-{round_id[:8]}"
+            rules = [
+                {
+                    "id": str(uuid4()),
+                    "round_id": round_id,
+                    "rule_version_id": item["id"],
+                    "executor_version_id": item["executor_version_id"],
+                    "rule_code": item["rule_code"],
+                    "rule_name": item["rule_name"],
+                    "executor_code": item["executor_code"],
+                    "stage_code": item["stage_code"],
+                    "source_type": item["source_type"],
+                    "enable_reason": item["enable_reason"],
+                    "enabled": True,
+                    "override_payload": None,
+                    "disable_reason": None,
+                    "snapshot_no": snapshot_no,
+                }
+                for item in candidate_rules
+            ]
+            round_item["rules"] = rules
+            round_item["rule_snapshot_no"] = snapshot_no
+            return {"round_id": round_id, "snapshot_no": snapshot_no, "locked": True, "rules": deepcopy(rules), "skipped_packs": skipped_packs}
 
     def list_reports(self) -> list[dict]:
         return [deepcopy(item) for item in self.reports.values()]
@@ -940,6 +1211,20 @@ class DemoStore:
                 return None
             round_no = task["current_round_no"] + 1
             round_id = str(uuid4())
+            previous_round = task["rounds"][-1] if task["rounds"] else None
+            inherited_rules = []
+            if payload.get("inherit_previous_snapshot", True) and previous_round:
+                snapshot_no = f"RULE-SNAPSHOT-R{round_no}-{round_id[:8]}"
+                inherited_rules = [
+                    {
+                        **deepcopy(item),
+                        "id": str(uuid4()),
+                        "round_id": round_id,
+                        "snapshot_no": snapshot_no,
+                        "enable_reason": "沿用上一轮规则和执行器版本",
+                    }
+                    for item in previous_round.get("rules", [])
+                ]
             new_round = {
                 "id": round_id,
                 "round_no": round_no,
@@ -947,6 +1232,7 @@ class DemoStore:
                 "round_note": payload.get("round_note") or "",
                 "inherit_previous_snapshot": payload.get("inherit_previous_snapshot", True),
                 "standards": list(task["rounds"][-1]["standards"]) if task["rounds"] else [],
+                "rules": inherited_rules,
                 "created_at": _now(),
             }
             task["current_round_no"] = round_no

@@ -15,6 +15,7 @@ dependencies = [
   "psycopg[binary]>=3.2",
   "pydantic>=2.8",
   "pydantic-settings>=2.4",
+  "jsonschema>=4.23",
   "python-multipart>=0.0.9",
   "pyjwt>=2.10",
   "pwdlib[argon2]>=0.3",

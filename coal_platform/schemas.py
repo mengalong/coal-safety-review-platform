@@ -102,6 +102,26 @@ class RuleVersionCreateRequest(BaseModel):
     executor_version_id: str | None = None
 
 
+class RulePackCreateRequest(BaseModel):
+    pack_code: str
+    pack_name: str
+    stage_code: str
+    trigger_condition: dict[str, Any] = Field(default_factory=dict)
+    rule_version_ids: list[str] = Field(default_factory=list)
+
+
+class RulePackUpdateRequest(BaseModel):
+    pack_name: str | None = None
+    stage_code: str | None = None
+    trigger_condition: dict[str, Any] | None = None
+    rule_version_ids: list[str] | None = None
+    status: str | None = None
+
+
+class RoundRuleAssemblyRequest(BaseModel):
+    rule_pack_ids: list[str] = Field(default_factory=list)
+
+
 class IssueUpdateRequest(BaseModel):
     title: str | None = None
     description: str | None = None

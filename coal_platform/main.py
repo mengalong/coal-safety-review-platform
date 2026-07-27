@@ -82,6 +82,7 @@ def create_app(
             403: "FORBIDDEN",
             404: "RESOURCE_NOT_FOUND",
             409: "CONFLICT",
+            422: "VALIDATION_ERROR",
         }.get(exc.status_code, "HTTP_ERROR")
         message = exc.detail if isinstance(exc.detail, str) else "request failed"
         return _error_response(code, message, exc.detail, exc.status_code, headers=exc.headers)

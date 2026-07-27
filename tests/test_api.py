@@ -315,7 +315,7 @@ def test_rule_and_executor_catalog_workflow() -> None:
         assert rules.status_code == 200
         assert executors.json()["data"][0]["versions"]
         assert rules.json()["data"][0]["versions"]
-        executor_code = executors.json()["data"][0]["executor_code"]
+        executor_code = next(item["executor_code"] for item in executors.json()["data"] if item["executor_code"] == "regex_format")
         assert client.get(f"/api/v1/executors/{executor_code}/versions", headers=reviewer_headers).status_code == 200
         assert client.post(
             "/api/v1/rules",
@@ -361,3 +361,107 @@ def test_rule_and_executor_catalog_workflow() -> None:
         detail = client.get(f"/api/v1/rules/{rule['id']}", headers=reviewer_headers)
         assert detail.status_code == 200
         assert detail.json()["data"]["status"] == "published"
+
+
+def test_rule_publish_rejects_invalid_executor_parameters() -> None:
+    with _client() as client:
+        admin_headers = _login(client, login_name="admin")
+        rule = client.post(
+            "/api/v1/rules",
+            headers=admin_headers,
+            json={
+                "rule_code": "INVALID_REGEX_PARAMETERS",
+                "rule_name": "无效正则参数测试",
+                "rule_type": "deterministic",
+                "executor_code": "regex_format",
+                "default_issue_category": "format",
+                "default_severity": "一般",
+            },
+        ).json()["data"]
+        version = client.post(
+            f"/api/v1/rules/{rule['id']}/versions",
+            headers=admin_headers,
+            json={"parameters": {"pattern": 42}, "stage_code": "single_file_review"},
+        ).json()["data"]
+
+        validation = client.post(
+            f"/api/v1/rule-versions/{version['id']}/validate",
+            headers=admin_headers,
+        )
+        published = client.post(
+            f"/api/v1/rule-versions/{version['id']}/publish",
+            headers=admin_headers,
+        )
+
+        assert validation.status_code == 200
+        assert validation.json()["data"]["valid"] is False
+        assert validation.json()["data"]["errors"][0]["path"] == "parameters.pattern"
+        assert published.status_code == 422
+        assert published.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
+    with _client() as client:
+        headers = _login(client)
+        admin_headers = _login(client, login_name="admin")
+        stages = client.get("/api/v1/settings/audit-stages", headers=headers)
+        packs = client.get("/api/v1/rule-packs", headers=headers)
+        assert stages.status_code == 200
+        assert [item["order_no"] for item in stages.json()["data"]] == list(range(10, 100, 10))
+        assert packs.status_code == 200
+        assert len(packs.json()["data"]) == 3
+
+        invalid_pack = client.post(
+            "/api/v1/rule-packs",
+            headers=admin_headers,
+            json={"pack_code": "INVALID_STAGE", "pack_name": "无效阶段", "stage_code": "free_form"},
+        )
+        assert invalid_pack.status_code == 422
+        assert invalid_pack.json()["detail"][0]["code"] == "INVALID_STAGE"
+
+        task = client.post("/api/v1/tasks", headers=headers, json={}).json()["data"]
+        uploaded = client.post(
+            f"/api/v1/tasks/{task['id']}/files",
+            headers=headers,
+            files=[
+                ("files", ("manual.pdf", b"manual", "application/pdf")),
+                (
+                    "files",
+                    (
+                        "inspection.docx",
+                        b"inspection",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ),
+                ),
+            ],
+        )
+        assert uploaded.status_code == 200
+
+        assembled = client.post(
+            f"/api/v1/rounds/{task['current_round_id']}/rules/assemble",
+            headers=headers,
+            json={},
+        )
+        assert assembled.status_code == 200
+        snapshot = assembled.json()["data"]
+        assert snapshot["locked"] is True
+        assert len(snapshot["rules"]) == 3
+        assert {item["source_type"] for item in snapshot["rules"]} == {"global", "file_trigger"}
+
+        repeated = client.post(
+            f"/api/v1/rounds/{task['current_round_id']}/rules/assemble",
+            headers=headers,
+            json={},
+        ).json()["data"]
+        assert [item["id"] for item in repeated["rules"]] == [item["id"] for item in snapshot["rules"]]
+
+        next_round = client.post(
+            f"/api/v1/tasks/{task['id']}/rounds",
+            headers=headers,
+            json={"inherit_previous_snapshot": True},
+        ).json()["data"]
+        inherited = client.get(f"/api/v1/rounds/{next_round['id']}/rules", headers=headers).json()["data"]
+        assert {item["rule_version_id"] for item in inherited} == {
+            item["rule_version_id"] for item in snapshot["rules"]
+        }
+        assert {item["snapshot_no"] for item in inherited} != {snapshot["snapshot_no"]}

@@ -18,8 +18,11 @@ from coal_platform.models import (
     ExecutorVersion,
     OperationLog,
     QueueJob,
+    RoundRule,
     RoundStandard,
     RuleDefinition,
+    RulePack,
+    RulePackItem,
     RuleVersion,
     Standard,
     StandardClause,
@@ -27,6 +30,18 @@ from coal_platform.models import (
     StandardVersion,
     TaskFile,
     User,
+)
+from coal_platform.rule_engine import (
+    DEFAULT_RULE_PACKS,
+    DEFAULT_RULE_STAGE_BY_CODE,
+    EXECUTOR_PARAMETER_SCHEMAS,
+    FIXED_AUDIT_STAGE_ORDER,
+    RuleConfigurationError,
+    evaluate_trigger_condition,
+    validate_dependency_graph,
+    validate_parameters,
+    validate_stage_code,
+    validate_trigger_condition,
 )
 from coal_platform.store import DemoStore, compare_clause_sets, next_version_no
 
@@ -225,7 +240,10 @@ class SqlAlchemyStore(DemoStore):
                 version = ExecutorVersion(
                     executor_definition_id=definition.id,
                     version_no=item["version_no"],
-                    parameter_schema={"type": "object", "description": item.get("parameter_note", "")},
+                    parameter_schema={
+                        **EXECUTOR_PARAMETER_SCHEMAS.get(item["executor_code"], {"type": "object"}),
+                        "description": item.get("parameter_note", ""),
+                    },
                     result_schema={"type": "object"},
                     default_timeout_seconds=item.get("default_timeout_seconds", 60),
                     supports_batch=item.get("supports_batch", False),
@@ -236,8 +254,6 @@ class SqlAlchemyStore(DemoStore):
                 session.add(version)
                 session.flush()
 
-        if session.scalar(select(RuleDefinition.id).limit(1)):
-            return
         executor_definitions = {
             item.executor_code: item for item in session.scalars(select(ExecutorDefinition))
         }
@@ -247,37 +263,78 @@ class SqlAlchemyStore(DemoStore):
                 select(ExecutorVersion).where(ExecutorVersion.status == "published")
             )
         }
-        for item in self.rules.values():
-            executor_definition = executor_definitions.get(item["executor_code"])
-            executor_version = executor_versions.get(executor_definition.id) if executor_definition else None
-            if not executor_definition or not executor_version:
-                continue
-            definition = RuleDefinition(
-                rule_code=item["rule_code"],
-                rule_name=item["rule_name"],
-                rule_type=item["rule_type"],
-                executor_definition_id=executor_definition.id,
-                default_issue_category=item.get("default_issue_category", "technical_compliance"),
-                default_severity=item.get("default_severity", item.get("severity", "一般")),
-                affects_suggested_conclusion=item.get("affects_suggested_conclusion", False),
-                is_mandatory=item.get("is_mandatory", False),
-            )
-            session.add(definition)
-            session.flush()
-            session.add(
-                RuleVersion(
-                    rule_definition_id=definition.id,
-                    version_no=item.get("version_no", "v1.0"),
-                    executor_version_id=executor_version.id,
-                    parameters={},
-                    scope_files=[],
-                    priority=100,
-                    stage_code="standard_compliance",
-                    dependency_rule_codes=[],
-                    task_override_allowed=True,
-                    status="published",
+        if not session.scalar(select(RuleDefinition.id).limit(1)):
+            for item in self.rules.values():
+                executor_definition = executor_definitions.get(item["executor_code"])
+                executor_version = executor_versions.get(executor_definition.id) if executor_definition else None
+                if not executor_definition or not executor_version:
+                    continue
+                definition = RuleDefinition(
+                    rule_code=item["rule_code"],
+                    rule_name=item["rule_name"],
+                    rule_type=item["rule_type"],
+                    executor_definition_id=executor_definition.id,
+                    default_issue_category=item.get("default_issue_category", "technical_compliance"),
+                    default_severity=item.get("default_severity", item.get("severity", "一般")),
+                    affects_suggested_conclusion=item.get("affects_suggested_conclusion", False),
+                    is_mandatory=item.get("is_mandatory", False),
                 )
+                session.add(definition)
+                session.flush()
+                session.add(
+                    RuleVersion(
+                        rule_definition_id=definition.id,
+                        version_no=item.get("version_no", "v1.0"),
+                        executor_version_id=executor_version.id,
+                        parameters={},
+                        scope_files=[],
+                        priority=100,
+                        stage_code=DEFAULT_RULE_STAGE_BY_CODE.get(item["rule_code"], "standard_compliance"),
+                        dependency_rule_codes=[],
+                        task_override_allowed=True,
+                        status="published",
+                    )
+                )
+            session.flush()
+
+        if session.scalar(select(RulePack.id).limit(1)):
+            return
+        definitions = {item.rule_code: item for item in session.scalars(select(RuleDefinition))}
+        for rule_code, stage_code in DEFAULT_RULE_STAGE_BY_CODE.items():
+            definition = definitions.get(rule_code)
+            if not definition:
+                continue
+            published = session.scalar(
+                select(RuleVersion)
+                .where(RuleVersion.rule_definition_id == definition.id, RuleVersion.status == "published")
+                .order_by(RuleVersion.created_at.desc())
+                .limit(1)
             )
+            if published:
+                published.stage_code = stage_code
+        versions = {
+            definition.rule_code: session.scalar(
+                select(RuleVersion)
+                .where(RuleVersion.rule_definition_id == definition.id, RuleVersion.status == "published")
+                .order_by(RuleVersion.created_at.desc())
+                .limit(1)
+            )
+            for definition in definitions.values()
+        }
+        for config in DEFAULT_RULE_PACKS:
+            pack = RulePack(
+                pack_code=config["pack_code"],
+                pack_name=config["pack_name"],
+                stage_code=config["stage_code"],
+                trigger_condition=config["trigger_condition"],
+                status="published",
+            )
+            session.add(pack)
+            session.flush()
+            for order_no, rule_code in enumerate(config["rule_codes"], start=1):
+                version = versions.get(rule_code)
+                if version:
+                    session.add(RulePackItem(rule_pack_id=pack.id, rule_version_id=version.id, order_no=order_no, enabled=True))
 
     @staticmethod
     def _user_dict(user: User) -> dict[str, Any]:
@@ -296,11 +353,18 @@ class SqlAlchemyStore(DemoStore):
 
     def _round_dict(self, round_item: AuditRound, session: Session | None = None) -> dict[str, Any]:
         standards = []
+        rules = []
         if session:
             standards = [
                 self._round_standard_dict(session, item)
                 for item in session.scalars(
                     select(RoundStandard).where(RoundStandard.round_id == round_item.id).order_by(RoundStandard.created_at)
+                )
+            ]
+            rules = [
+                self._round_rule_dict(session, item)
+                for item in session.scalars(
+                    select(RoundRule).where(RoundRule.round_id == round_item.id).order_by(RoundRule.created_at)
                 )
             ]
         return {
@@ -313,6 +377,7 @@ class SqlAlchemyStore(DemoStore):
             "round_note": round_item.round_note,
             "basic_info_snapshot": round_item.basic_info_snapshot,
             "standards": standards,
+            "rules": rules,
             "created_at": _iso(round_item.created_at),
             "updated_at": _iso(round_item.updated_at),
         }
@@ -419,6 +484,60 @@ class SqlAlchemyStore(DemoStore):
             "version_no": latest.version_no if latest else None,
             "status": latest.status if latest else "draft",
             "versions": [self._rule_version_dict(session, version) for version in versions],
+        }
+
+    def _rule_pack_dict(self, session: Session, pack: RulePack) -> dict[str, Any]:
+        items = session.scalars(
+            select(RulePackItem).where(RulePackItem.rule_pack_id == pack.id).order_by(RulePackItem.order_no)
+        ).all()
+        version_ids = [item.rule_version_id for item in items]
+        versions = {
+            item.id: item for item in session.scalars(select(RuleVersion).where(RuleVersion.id.in_(version_ids)))
+        } if version_ids else {}
+        return {
+            "id": str(pack.id),
+            "pack_code": pack.pack_code,
+            "pack_name": pack.pack_name,
+            "stage_code": pack.stage_code,
+            "trigger_condition": pack.trigger_condition or {},
+            "source_type": (pack.trigger_condition or {}).get("source_type", "global"),
+            "status": pack.status,
+            "items": [
+                {
+                    "id": str(item.id),
+                    "rule_pack_id": str(item.rule_pack_id),
+                    "rule_version_id": str(item.rule_version_id),
+                    "rule_code": self._rule_version_dict(session, versions[item.rule_version_id])["rule_code"]
+                    if item.rule_version_id in versions
+                    else None,
+                    "version_no": versions[item.rule_version_id].version_no if item.rule_version_id in versions else None,
+                    "order_no": item.order_no,
+                    "enabled": item.enabled,
+                }
+                for item in items
+            ],
+        }
+
+    def _round_rule_dict(self, session: Session, item: RoundRule) -> dict[str, Any]:
+        version = session.get(RuleVersion, item.rule_version_id)
+        rule = session.get(RuleDefinition, version.rule_definition_id) if version else None
+        executor_version = session.get(ExecutorVersion, item.executor_version_id)
+        executor = session.get(ExecutorDefinition, executor_version.executor_definition_id) if executor_version else None
+        return {
+            "id": str(item.id),
+            "round_id": str(item.round_id),
+            "rule_version_id": str(item.rule_version_id),
+            "executor_version_id": str(item.executor_version_id),
+            "rule_code": rule.rule_code if rule else None,
+            "rule_name": rule.rule_name if rule else None,
+            "executor_code": executor.executor_code if executor else None,
+            "stage_code": version.stage_code if version else None,
+            "source_type": item.source_type,
+            "enable_reason": "全局基础规则" if item.source_type == "global" else "任务文件和数据满足触发条件",
+            "enabled": item.enabled,
+            "override_payload": item.override_payload,
+            "disable_reason": item.disable_reason,
+            "snapshot_no": item.snapshot_no,
         }
 
     @staticmethod
@@ -757,6 +876,9 @@ class SqlAlchemyStore(DemoStore):
             definition = session.get(RuleDefinition, rule_uuid)
             if not definition:
                 return None
+            stage_code = payload.get("stage_code", "standard_compliance")
+            if errors := validate_stage_code(stage_code):
+                raise RuleConfigurationError(errors)
             executor_version = None
             if payload.get("executor_version_id"):
                 executor_version = session.get(ExecutorVersion, _uuid(payload["executor_version_id"]))
@@ -787,7 +909,7 @@ class SqlAlchemyStore(DemoStore):
                 parameters=payload.get("parameters") or {},
                 scope_files=payload.get("scope_files") or [],
                 priority=payload.get("priority", 100),
-                stage_code=payload.get("stage_code", "standard_compliance"),
+                stage_code=stage_code,
                 dependency_rule_codes=payload.get("dependency_rule_codes") or [],
                 task_override_allowed=payload.get("task_override_allowed", True),
                 status="draft",
@@ -805,6 +927,43 @@ class SqlAlchemyStore(DemoStore):
             )
             return self._rule_version_dict(session, version)
 
+    def _rule_validation_errors(self, session: Session, version: RuleVersion) -> list[dict[str, Any]]:
+        definition = session.get(RuleDefinition, version.rule_definition_id)
+        executor_version = session.get(ExecutorVersion, version.executor_version_id)
+        errors = validate_stage_code(version.stage_code)
+        if not executor_version or executor_version.status != "published":
+            errors.append({"code": "EXECUTOR_VERSION_UNAVAILABLE", "message": "executor version is not published", "path": "executor_version_id"})
+        else:
+            errors.extend(validate_parameters(version.parameters or {}, executor_version.parameter_schema or {}))
+        graph: dict[str, list[str]] = {}
+        known_rule_codes: set[str] = set()
+        for item in session.scalars(select(RuleDefinition)):
+            published = session.scalar(
+                select(RuleVersion)
+                .where(RuleVersion.rule_definition_id == item.id, RuleVersion.status == "published")
+                .order_by(RuleVersion.created_at.desc())
+                .limit(1)
+            )
+            if published:
+                graph[item.rule_code] = list(published.dependency_rule_codes or [])
+                known_rule_codes.add(item.rule_code)
+        if definition:
+            graph[definition.rule_code] = list(version.dependency_rule_codes or [])
+            known_rule_codes.add(definition.rule_code)
+        errors.extend(validate_dependency_graph(graph, known_rule_codes))
+        return errors
+
+    def validate_rule_version(self, version_id: str) -> dict[str, Any] | None:
+        version_uuid = _uuid(version_id)
+        if not version_uuid:
+            return None
+        with self.session_factory() as session:
+            version = session.get(RuleVersion, version_uuid)
+            if not version:
+                return None
+            errors = self._rule_validation_errors(session, version)
+            return {"valid": not errors, "rule_version_id": version_id, "errors": errors}
+
     def publish_rule_version(self, version_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         version_uuid = _uuid(version_id)
         if not version_uuid:
@@ -813,9 +972,8 @@ class SqlAlchemyStore(DemoStore):
             version = session.get(RuleVersion, version_uuid)
             if not version:
                 return None
-            executor_version = session.get(ExecutorVersion, version.executor_version_id)
-            if not executor_version or executor_version.status != "published":
-                return None
+            if errors := self._rule_validation_errors(session, version):
+                raise RuleConfigurationError(errors)
             for previous in session.scalars(
                 select(RuleVersion).where(
                     RuleVersion.rule_definition_id == version.rule_definition_id,
@@ -836,6 +994,262 @@ class SqlAlchemyStore(DemoStore):
             )
             session.flush()
             return self._rule_version_dict(session, version)
+
+    def list_rule_packs(self) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            packs = session.scalars(select(RulePack)).all()
+            packs.sort(key=lambda item: (FIXED_AUDIT_STAGE_ORDER[item.stage_code], item.pack_code))
+            return [self._rule_pack_dict(session, item) for item in packs]
+
+    def _validate_rule_pack_payload(
+        self,
+        session: Session,
+        payload: dict[str, Any],
+        member_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        errors = validate_stage_code(payload.get("stage_code", ""))
+        errors.extend(validate_trigger_condition(payload.get("trigger_condition") or {}))
+        if payload.get("status", "draft") not in {"draft", "published", "disabled", "archived"}:
+            errors.append({"code": "INVALID_PACK_STATUS", "message": "unknown rule pack status", "path": "status"})
+        if payload.get("status") == "published" and not member_ids:
+            errors.append({"code": "EMPTY_RULE_PACK", "message": "published rule pack must contain rules", "path": "rule_version_ids"})
+        for index, version_id in enumerate(member_ids):
+            version_uuid = _uuid(version_id)
+            version = session.get(RuleVersion, version_uuid) if version_uuid else None
+            definition = session.get(RuleDefinition, version.rule_definition_id) if version else None
+            if not version or not definition:
+                errors.append({"code": "RULE_VERSION_NOT_FOUND", "message": "rule version not found", "path": f"rule_version_ids.{index}"})
+                continue
+            if version.status != "published":
+                errors.append({"code": "RULE_VERSION_NOT_PUBLISHED", "message": "rule pack only accepts published rule versions", "path": f"rule_version_ids.{index}"})
+            if version.stage_code != payload.get("stage_code"):
+                errors.append({"code": "STAGE_MISMATCH", "message": "rule version stage does not match rule pack stage", "path": f"rule_version_ids.{index}"})
+        return errors
+
+    def create_rule_pack(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        with self.session_factory() as session, session.begin():
+            if session.scalar(select(RulePack.id).where(RulePack.pack_code == payload["pack_code"])):
+                return None
+            member_ids = payload.get("rule_version_ids") or []
+            if errors := self._validate_rule_pack_payload(session, payload, member_ids):
+                raise RuleConfigurationError(errors)
+            pack = RulePack(
+                pack_code=payload["pack_code"],
+                pack_name=payload["pack_name"],
+                stage_code=payload["stage_code"],
+                trigger_condition=payload.get("trigger_condition") or {},
+                status=payload.get("status", "draft"),
+            )
+            session.add(pack)
+            session.flush()
+            for order_no, version_id in enumerate(member_ids, start=1):
+                session.add(
+                    RulePackItem(
+                        rule_pack_id=pack.id,
+                        rule_version_id=_uuid(version_id),
+                        order_no=order_no,
+                        enabled=True,
+                    )
+                )
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="rule_pack",
+                entity_id=pack.id,
+                action_code="rule_pack.create",
+                after_snapshot={"pack_code": pack.pack_code, "rule_version_ids": member_ids},
+                trace_id=payload.get("_trace_id"),
+            )
+            return self._rule_pack_dict(session, pack)
+
+    def update_rule_pack(self, pack_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        pack_uuid = _uuid(pack_id)
+        if not pack_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            pack = session.get(RulePack, pack_uuid)
+            if not pack:
+                return None
+            before = {
+                "pack_name": pack.pack_name,
+                "stage_code": pack.stage_code,
+                "trigger_condition": pack.trigger_condition,
+                "status": pack.status,
+            }
+            for key in ("pack_name", "stage_code", "trigger_condition", "status"):
+                if payload.get(key) is not None:
+                    setattr(pack, key, payload[key])
+            existing_items = session.scalars(select(RulePackItem).where(RulePackItem.rule_pack_id == pack.id)).all()
+            member_ids = payload.get("rule_version_ids")
+            if member_ids is None:
+                member_ids = [str(item.rule_version_id) for item in existing_items]
+            pack_payload = {
+                "stage_code": pack.stage_code,
+                "trigger_condition": pack.trigger_condition or {},
+                "status": pack.status,
+            }
+            if errors := self._validate_rule_pack_payload(session, pack_payload, member_ids):
+                raise RuleConfigurationError(errors)
+            for item in existing_items:
+                session.delete(item)
+            session.flush()
+            for order_no, version_id in enumerate(member_ids, start=1):
+                session.add(
+                    RulePackItem(
+                        rule_pack_id=pack.id,
+                        rule_version_id=_uuid(version_id),
+                        order_no=order_no,
+                        enabled=True,
+                    )
+                )
+            session.flush()
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="rule_pack",
+                entity_id=pack.id,
+                action_code="rule_pack.update",
+                before_snapshot=before,
+                after_snapshot={
+                    "pack_name": pack.pack_name,
+                    "stage_code": pack.stage_code,
+                    "trigger_condition": pack.trigger_condition,
+                    "status": pack.status,
+                    "rule_version_ids": member_ids,
+                },
+                trace_id=payload.get("_trace_id"),
+            )
+            return self._rule_pack_dict(session, pack)
+
+    def list_round_rules(self, round_id: str) -> list[dict[str, Any]] | None:
+        round_uuid = _uuid(round_id)
+        if not round_uuid:
+            return None
+        with self.session_factory() as session:
+            if not session.get(AuditRound, round_uuid):
+                return None
+            return [
+                self._round_rule_dict(session, item)
+                for item in session.scalars(
+                    select(RoundRule).where(RoundRule.round_id == round_uuid).order_by(RoundRule.created_at)
+                )
+            ]
+
+    def assemble_round_rules(self, round_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        round_uuid = _uuid(round_id)
+        if not round_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            round_item = session.scalar(select(AuditRound).where(AuditRound.id == round_uuid).with_for_update())
+            if not round_item:
+                return None
+            existing = session.scalars(
+                select(RoundRule).where(RoundRule.round_id == round_item.id).order_by(RoundRule.created_at)
+            ).all()
+            if existing:
+                return {
+                    "round_id": round_id,
+                    "snapshot_no": existing[0].snapshot_no,
+                    "locked": True,
+                    "rules": [self._round_rule_dict(session, item) for item in existing],
+                }
+            task = session.get(AuditTask, round_item.task_id)
+            if not task:
+                return None
+            requested_ids = payload.get("rule_pack_ids", [])
+            selected_ids = {_uuid(item) for item in requested_ids if _uuid(item)}
+            if requested_ids and len(selected_ids) != len(set(requested_ids)):
+                raise RuleConfigurationError(
+                    [{"code": "RULE_PACK_NOT_FOUND", "message": "rule pack id is invalid", "path": "rule_pack_ids"}]
+                )
+            if selected_ids:
+                found_ids = set(session.scalars(select(RulePack.id).where(RulePack.id.in_(selected_ids))))
+                missing_ids = selected_ids - found_ids
+                if missing_ids:
+                    raise RuleConfigurationError(
+                        [
+                            {
+                                "code": "RULE_PACK_NOT_FOUND",
+                                "message": f"rule pack not found: {pack_id}",
+                                "path": "rule_pack_ids",
+                            }
+                            for pack_id in sorted(missing_ids, key=str)
+                        ]
+                    )
+            pack_query = select(RulePack).where(RulePack.status == "published")
+            if selected_ids:
+                pack_query = pack_query.where(RulePack.id.in_(selected_ids))
+            packs = session.scalars(pack_query.order_by(RulePack.stage_code, RulePack.pack_code)).all()
+            file_types = list(
+                session.scalars(select(TaskFile.file_type).where(TaskFile.task_id == task.id))
+            )
+            confirmed_standard_count = session.scalar(
+                select(func.count(RoundStandard.id)).where(
+                    RoundStandard.round_id == round_item.id,
+                    RoundStandard.snapshot_no.like("SNAPSHOT-%"),
+                )
+            ) or 0
+            candidate_ids: set[UUID] = set()
+            candidates: list[tuple[RuleVersion, str, str]] = []
+            skipped_packs = []
+            for pack in packs:
+                enabled, reason = evaluate_trigger_condition(
+                    pack.trigger_condition or {},
+                    file_types=file_types,
+                    confirmed_standard_count=confirmed_standard_count,
+                )
+                if not enabled:
+                    skipped_packs.append({"pack_code": pack.pack_code, "reason": reason})
+                    continue
+                members = session.scalars(
+                    select(RulePackItem).where(RulePackItem.rule_pack_id == pack.id, RulePackItem.enabled.is_(True)).order_by(RulePackItem.order_no)
+                ).all()
+                for member in members:
+                    if member.rule_version_id in candidate_ids:
+                        continue
+                    version = session.get(RuleVersion, member.rule_version_id)
+                    if not version:
+                        continue
+                    candidate_ids.add(version.id)
+                    candidates.append((version, (pack.trigger_condition or {}).get("source_type", "global"), reason))
+            candidates.sort(
+                key=lambda item: (
+                    FIXED_AUDIT_STAGE_ORDER[item[0].stage_code],
+                    item[0].priority,
+                    str(item[0].id),
+                )
+            )
+            snapshot_no = f"RULE-SNAPSHOT-R{round_item.round_no}-{str(round_item.id)[:8]}"
+            created = []
+            for version, source_type, _reason in candidates:
+                item = RoundRule(
+                    round_id=round_item.id,
+                    rule_version_id=version.id,
+                    executor_version_id=version.executor_version_id,
+                    source_type=source_type,
+                    enabled=True,
+                    snapshot_no=snapshot_no,
+                )
+                session.add(item)
+                created.append(item)
+            session.flush()
+            round_item.rule_snapshot_id = created[0].id if created else None
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="audit_round",
+                entity_id=round_item.id,
+                action_code="round_rule.assemble",
+                after_snapshot={"snapshot_no": snapshot_no, "rule_count": len(created)},
+                trace_id=payload.get("_trace_id"),
+            )
+            return {
+                "round_id": round_id,
+                "snapshot_no": snapshot_no,
+                "locked": True,
+                "rules": [self._round_rule_dict(session, item) for item in created],
+                "skipped_packs": skipped_packs,
+            }
 
     def list_standards(self) -> list[dict[str, Any]]:
         with self.session_factory() as session:
@@ -1342,6 +1756,7 @@ class SqlAlchemyStore(DemoStore):
             task = session.get(AuditTask, task_uuid)
             if not task:
                 return None
+            previous_round = session.get(AuditRound, task.current_round_id) if task.current_round_id else None
             round_item = AuditRound(
                 task_id=task.id,
                 round_no=task.current_round_no + 1,
@@ -1355,6 +1770,25 @@ class SqlAlchemyStore(DemoStore):
             )
             session.add(round_item)
             session.flush()
+            if payload.get("inherit_previous_snapshot", True) and previous_round:
+                inherited = session.scalars(
+                    select(RoundRule).where(RoundRule.round_id == previous_round.id).order_by(RoundRule.created_at)
+                ).all()
+                snapshot_no = f"RULE-SNAPSHOT-R{round_item.round_no}-{str(round_item.id)[:8]}"
+                for previous_rule in inherited:
+                    session.add(
+                        RoundRule(
+                            round_id=round_item.id,
+                            rule_version_id=previous_rule.rule_version_id,
+                            executor_version_id=previous_rule.executor_version_id,
+                            source_type=previous_rule.source_type,
+                            enabled=previous_rule.enabled,
+                            override_payload=previous_rule.override_payload,
+                            disable_reason=previous_rule.disable_reason,
+                            snapshot_no=snapshot_no,
+                        )
+                    )
+                session.flush()
             task.current_round_no = round_item.round_no
             task.current_round_id = round_item.id
             task.status = "in_new_round"

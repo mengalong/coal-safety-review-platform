@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 
 from coal_platform.auth import access_token_expires_at, create_access_token, require_admin, require_user
 from coal_platform.request_context import get_trace_id
+from coal_platform.rule_engine import FIXED_AUDIT_STAGES, RuleConfigurationError
 from coal_platform.schemas import (
     BasicInfoPayload,
     IssueUpdateRequest,
@@ -18,7 +19,10 @@ from coal_platform.schemas import (
     LoginResponse,
     ReportCreateRequest,
     RoundCreateRequest,
+    RoundRuleAssemblyRequest,
     RuleCreateRequest,
+    RulePackCreateRequest,
+    RulePackUpdateRequest,
     RuleVersionCreateRequest,
     StandardCreateRequest,
     StandardParseRevisionCreateRequest,
@@ -50,6 +54,7 @@ standard_parse_revisions_router = APIRouter(
 )
 rules_router = APIRouter(prefix="/rules", tags=["rules"], dependencies=[Depends(require_user)])
 rule_versions_router = APIRouter(prefix="/rule-versions", tags=["rule-versions"], dependencies=[Depends(require_user)])
+rule_packs_router = APIRouter(prefix="/rule-packs", tags=["rule-packs"], dependencies=[Depends(require_user)])
 executors_router = APIRouter(prefix="/executors", tags=["executors"], dependencies=[Depends(require_user)])
 issues_router = APIRouter(prefix="/issues", tags=["issues"], dependencies=[Depends(require_user)])
 reports_router = APIRouter(prefix="/reports", tags=["reports"], dependencies=[Depends(require_user)])
@@ -286,6 +291,39 @@ def confirm_round_standard(round_id: str, round_standard_id: str, request: Reque
     return _ok(item, "round standard confirmed")
 
 
+@rounds_router.get("/{round_id}/rules")
+def list_round_rules(round_id: str, request: Request) -> dict:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if task:
+        _ensure_task_access(request, task)
+    rules = request.app.state.store.list_round_rules(round_id)
+    if rules is None:
+        raise HTTPException(status_code=404, detail="round not found")
+    return _ok(rules)
+
+
+@rounds_router.post("/{round_id}/rules/assemble")
+def assemble_round_rules(round_id: str, payload: RoundRuleAssemblyRequest, request: Request) -> dict:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if task:
+        _ensure_task_access(request, task)
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    try:
+        snapshot = request.app.state.store.assemble_round_rules(round_id, data)
+    except RuleConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors) from exc
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="round not found")
+    return _ok(snapshot, "round rules assembled")
+
+
 @rounds_router.get("/{round_id}/dynamic-items")
 def list_dynamic_items(round_id: str) -> dict:
     return _ok(
@@ -505,7 +543,10 @@ def get_rule(rule_id: str, request: Request) -> dict:
 def create_rule_version(rule_id: str, payload: RuleVersionCreateRequest, request: Request) -> JSONResponse:
     data = payload.model_dump()
     data.update(_operation_context(request))
-    version = request.app.state.store.create_rule_version(rule_id, data)
+    try:
+        version = request.app.state.store.create_rule_version(rule_id, data)
+    except RuleConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors) from exc
     if not version:
         raise HTTPException(status_code=404, detail="rule or executor version not found")
     return JSONResponse(status_code=201, content=_ok(version, "rule version created"))
@@ -527,13 +568,55 @@ def get_rule_version(rule_version_id: str, request: Request) -> dict:
     return _ok(version)
 
 
+@rule_versions_router.post("/{rule_version_id}/validate", dependencies=[Depends(require_admin)])
+def validate_rule_version(rule_version_id: str, request: Request) -> dict:
+    result = request.app.state.store.validate_rule_version(rule_version_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="rule version not found")
+    return _ok(result)
+
+
 @rule_versions_router.post("/{rule_version_id}/publish", dependencies=[Depends(require_admin)])
 @rules_router.post("/{rule_version_id}/publish", dependencies=[Depends(require_admin)])
 def publish_rule(rule_version_id: str, request: Request) -> dict:
-    version = request.app.state.store.publish_rule_version(rule_version_id, _operation_context(request))
+    try:
+        version = request.app.state.store.publish_rule_version(rule_version_id, _operation_context(request))
+    except RuleConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors) from exc
     if not version:
         raise HTTPException(status_code=404, detail="rule version not found")
     return _ok(version, "rule version published")
+
+
+@rule_packs_router.get("")
+def list_rule_packs(request: Request) -> dict:
+    return _ok(request.app.state.store.list_rule_packs())
+
+
+@rule_packs_router.post("", dependencies=[Depends(require_admin)])
+def create_rule_pack(payload: RulePackCreateRequest, request: Request) -> JSONResponse:
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    try:
+        pack = request.app.state.store.create_rule_pack(data)
+    except RuleConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors) from exc
+    if not pack:
+        raise HTTPException(status_code=409, detail="rule pack code already exists")
+    return JSONResponse(status_code=201, content=_ok(pack, "rule pack created"))
+
+
+@rule_packs_router.patch("/{pack_id}", dependencies=[Depends(require_admin)])
+def update_rule_pack(pack_id: str, payload: RulePackUpdateRequest, request: Request) -> dict:
+    data = payload.model_dump(exclude_unset=True)
+    data.update(_operation_context(request))
+    try:
+        pack = request.app.state.store.update_rule_pack(pack_id, data)
+    except RuleConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors) from exc
+    if not pack:
+        raise HTTPException(status_code=404, detail="rule pack not found")
+    return _ok(pack, "rule pack updated")
 
 
 @executors_router.get("")
@@ -625,6 +708,11 @@ def list_issue_categories() -> dict:
     )
 
 
+@settings_router.get("/audit-stages")
+def list_audit_stages() -> dict:
+    return _ok(list(FIXED_AUDIT_STAGES))
+
+
 @jobs_router.get("")
 def list_jobs() -> dict:
     return _ok([])
@@ -658,6 +746,7 @@ def register_routers(app: FastAPI, prefix: str = "/api/v1") -> None:
     app.include_router(standard_parse_revisions_router, prefix=prefix)
     app.include_router(rules_router, prefix=prefix)
     app.include_router(rule_versions_router, prefix=prefix)
+    app.include_router(rule_packs_router, prefix=prefix)
     app.include_router(executors_router, prefix=prefix)
     app.include_router(issues_router, prefix=prefix)
     app.include_router(reports_router, prefix=prefix)

@@ -13,8 +13,11 @@ from coal_platform.models import (
     ExecutorVersion,
     OperationLog,
     QueueJob,
+    RoundRule,
     RoundStandard,
     RuleDefinition,
+    RulePack,
+    RulePackItem,
     RuleVersion,
     Standard,
     StandardClause,
@@ -237,7 +240,7 @@ def test_database_store_persists_executor_and_rule_versions(tmp_path: Path) -> N
             "rule_code": "PRODUCT_MODEL_FORMAT",
             "rule_name": "产品型号格式检查",
             "rule_type": "deterministic",
-            "executor_code": executors[0]["executor_code"],
+            "executor_code": next(item["executor_code"] for item in executors if item["executor_code"] == "regex_format"),
             "default_issue_category": "format",
             "default_severity": "一般",
             "affects_suggested_conclusion": True,
@@ -258,13 +261,58 @@ def test_database_store_persists_executor_and_rule_versions(tmp_path: Path) -> N
     assert published and published["status"] == "published"
     reloaded = store.get_rule(created["id"])
     assert reloaded and reloaded["status"] == "published"
-    assert reloaded["versions"][0]["executor_code"] == executors[0]["executor_code"]
+    assert reloaded["versions"][0]["executor_code"] == "regex_format"
 
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(ExecutorDefinition)) == 9
         assert session.scalar(select(func.count()).select_from(ExecutorVersion)) == 9
         assert session.scalar(select(func.count()).select_from(RuleDefinition)) == 5
         assert session.scalar(select(func.count()).select_from(RuleVersion)) == 5
+
+
+def test_database_store_persists_rule_packs_and_inherited_round_snapshot(tmp_path: Path) -> None:
+    store, factory = _store(tmp_path / "rule-snapshot.db")
+    reviewer = store.authenticate("liming", DemoStore.demo_password)
+    assert reviewer
+    task = store.create_task({"owner_user_id": reviewer["id"], "_operator_user_id": reviewer["id"]})
+    store.add_task_files(
+        task["id"],
+        [
+            {
+                "file_name": "manual.pdf",
+                "file_type": "pdf",
+                "content_type": "application/pdf",
+                "file_size": 6,
+                "sha256": "b" * 64,
+                "storage_key": f"tasks/{task['id']}/manual.pdf",
+            },
+            {
+                "file_name": "inspection.docx",
+                "file_type": "docx",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "file_size": 10,
+                "sha256": "c" * 64,
+                "storage_key": f"tasks/{task['id']}/inspection.docx",
+            },
+        ],
+    )
+
+    snapshot = store.assemble_round_rules(task["current_round_id"], {})
+    assert snapshot and len(snapshot["rules"]) == 3
+    repeated = store.assemble_round_rules(task["current_round_id"], {})
+    assert repeated and [item["id"] for item in repeated["rules"]] == [item["id"] for item in snapshot["rules"]]
+
+    next_round = store.create_round(task["id"], {"inherit_previous_snapshot": True})
+    assert next_round
+    inherited = store.list_round_rules(next_round["id"])
+    assert inherited and {item["rule_version_id"] for item in inherited} == {
+        item["rule_version_id"] for item in snapshot["rules"]
+    }
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(RulePack)) == 3
+        assert session.scalar(select(func.count()).select_from(RulePackItem)) == 4
+        assert session.scalar(select(func.count()).select_from(RoundRule)) == 6
 
 
 def test_database_store_persists_and_revokes_auth_session(tmp_path: Path) -> None:

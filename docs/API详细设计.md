@@ -197,12 +197,15 @@
 | `POST` | `/api/v1/rules` | 创建规则主档 |
 | `GET` | `/api/v1/rules/{rule_id}` | 规则详情 |
 | `POST` | `/api/v1/rules/{rule_id}/versions` | 创建新版本 |
+| `GET` | `/api/v1/rules/{rule_id}/versions` | 规则版本列表 |
 | `GET` | `/api/v1/rule-versions/{rule_version_id}` | 规则版本详情 |
+| `POST` | `/api/v1/rule-versions/{rule_version_id}/validate` | 执行发布前配置校验 |
 | `POST` | `/api/v1/rule-versions/{rule_version_id}/publish` | 发布版本 |
 | `POST` | `/api/v1/rule-versions/{rule_version_id}/test-runs` | 试运行 |
 | `GET` | `/api/v1/rule-packs` | 规则包列表 |
 | `POST` | `/api/v1/rule-packs` | 创建规则包 |
 | `PATCH` | `/api/v1/rule-packs/{pack_id}` | 编辑规则包 |
+| `GET` | `/api/v1/settings/audit-stages` | 固定审核阶段列表 |
 
 规则发布前校验：
 
@@ -211,6 +214,17 @@
 3. 不存在依赖循环。
 4. 试运行无未处置执行异常。
 5. AI 规则满足结构化输出约束。
+
+第一期规则包只能选择系统固定审核阶段，成员必须引用同阶段的已发布规则版本。触发条件支持全局基础规则、最少文件数、任一或全部文件类型以及已确认标准要求，不开放任意脚本表达式。
+
+### 7.3 本轮规则快照
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/v1/rounds/{round_id}/rules` | 查询本轮规则与执行器版本快照 |
+| `POST` | `/api/v1/rounds/{round_id}/rules/assemble` | 按规则包和任务文件装配并锁定快照 |
+
+首次装配写入 `round_rule` 后，同一轮次重复调用只返回原快照，不重新选择新发布版本。创建新轮次时默认复制上一轮的规则版本、执行器版本、启停状态和任务级覆盖；显式关闭 `inherit_previous_snapshot` 后才允许按最新已发布配置重新装配。
 
 ## 8. 动态审核项与覆盖清单
 

@@ -432,6 +432,11 @@ textarea.control { min-height: 94px; height: auto; padding-top: 10px; resize: ve
 .toast svg { width: 18px; height: 18px; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
+@media (max-width: 1399px) {
+  .rule-layout { grid-template-columns: 1fr; }
+  .rule-side { position: static; }
+}
+
 @media (max-width: 1199px) {
   :root { --sidebar: 72px; }
   .brand { justify-content: center; padding: 0; }
@@ -482,6 +487,9 @@ textarea.control { min-height: 94px; height: auto; padding-top: 10px; resize: ve
   .data-table th:nth-child(1), .data-table td:nth-child(1) { width: 31%; }
   .data-table th:nth-child(3), .data-table td:nth-child(3) { width: 43%; }
   .data-table th:nth-child(4), .data-table td:nth-child(4) { width: 26%; }
+  .rule-layout .data-table th:nth-child(1), .rule-layout .data-table td:nth-child(1) { width: 58%; }
+  .rule-layout .data-table th:nth-child(3), .rule-layout .data-table td:nth-child(3) { width: 20%; }
+  .rule-layout .data-table th:nth-child(4), .rule-layout .data-table td:nth-child(4) { width: 22%; }
   .data-table td { padding: 9px 10px; overflow-wrap: anywhere; }
   .hide-mobile { display: none !important; }
   .task-row { grid-template-columns: 1fr; }
