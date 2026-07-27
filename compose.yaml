@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: coal
+      POSTGRES_USER: coal
+      POSTGRES_PASSWORD: coal-local-password
+    ports:
+      - "54320:5432"
+    volumes:
+      - coal_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coal -d coal"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "63790:6379"
+    volumes:
+      - coal_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: coal
+      MINIO_ROOT_PASSWORD: coal-local-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - coal_minio_data:/data
+
+  api:
+    build:
+      context: .
+    environment:
+      COAL_ENVIRONMENT: development
+      COAL_DATABASE_URL: postgresql+psycopg://coal:coal-local-password@postgres:5432/coal
+      COAL_REDIS_URL: redis://redis:6379/0
+      COAL_MINIO_ENDPOINT: minio:9000
+      COAL_MINIO_ACCESS_KEY: coal
+      COAL_MINIO_SECRET_KEY: coal-local-secret
+      COAL_MINIO_BUCKET: coal-review
+      COAL_STORAGE_BACKEND: minio
+      COAL_CORS_ORIGINS: '["http://127.0.0.1:65513","http://localhost:65513"]'
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+volumes:
+  coal_postgres_data:
+  coal_redis_data:
+  coal_minio_data:
