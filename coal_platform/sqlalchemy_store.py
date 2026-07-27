@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -16,6 +16,11 @@ from coal_platform.models import (
     AuthSession,
     OperationLog,
     QueueJob,
+    RoundStandard,
+    Standard,
+    StandardClause,
+    StandardParseRevision,
+    StandardVersion,
     TaskFile,
     User,
 )
@@ -55,6 +60,7 @@ class SqlAlchemyStore(DemoStore):
     def _seed_database(self) -> None:
         with self.session_factory() as session, session.begin():
             if session.scalar(select(func.count()).select_from(User)):
+                self._seed_standard_catalog(session)
                 return
 
             reviewer = User(
@@ -132,6 +138,69 @@ class SqlAlchemyStore(DemoStore):
                 session.add(round_item)
                 session.flush()
                 task.current_round_id = round_item.id
+            self._seed_standard_catalog(session)
+
+    @staticmethod
+    def _seed_standard_catalog(session: Session) -> None:
+        if session.scalar(select(Standard.id).limit(1)):
+            return
+        catalog = [
+            ("GB/T 10595", "带式输送机", "国家标准", "2017", "GB/T 10595-2017"),
+            ("MT/T 820", "煤矿用带式输送机 技术条件", "行业标准", "2023", "MT/T 820-2023"),
+            ("MT 820", "煤矿用带式输送机 技术条件", "行业标准", "2006", "MT 820-2006"),
+            ("GB/T 191", "包装储运图示标志", "国家标准", "2008", "GB/T 191-2008"),
+            ("MT/T 154.1", "煤矿机电产品型号编制方法", "行业标准", "2011", "MT/T 154.1-2011"),
+        ]
+        for code, name, standard_type, version_label, full_code in catalog:
+            standard = Standard(
+                standard_code=code,
+                standard_name=name,
+                standard_type=standard_type,
+                status="obsolete" if version_label == "2006" else "active",
+            )
+            session.add(standard)
+            session.flush()
+            version = StandardVersion(
+                standard_id=standard.id,
+                full_code=full_code,
+                version_label=version_label,
+                publish_date=date(int(version_label), 12, 20),
+                implement_date=date(int(version_label) + 1, 7, 1),
+                publisher="国家标准化管理委员会" if standard_type == "国家标准" else "国家矿山安全监察局",
+                mandatory_flag=False,
+                status="obsolete" if version_label == "2006" else "active",
+            )
+            session.add(version)
+            session.flush()
+            revision = StandardParseRevision(
+                standard_version_id=version.id,
+                revision_no="P1",
+                revision_payload={"source": "seed", "clause_count": 2},
+                impact_flag="no_impact",
+                status="published",
+                published_at=datetime.now(UTC),
+            )
+            session.add(revision)
+            session.flush()
+            clauses = [
+                ("5.3.2", "驱动功率配置", "必须", "驱动装置的配置及额定功率应满足设计输送能力，并与产品型号标示一致。"),
+                ("附录A", "受控件类别", "待确认", "受控件类别应依据现行实施规则确认。"),
+            ]
+            for clause_code, title, constraint_level, original_text in clauses:
+                session.add(
+                    StandardClause(
+                        parse_revision_id=revision.id,
+                        clause_code=clause_code,
+                        title=title,
+                        clause_level=2,
+                        clause_type="requirement",
+                        constraint_level=constraint_level,
+                        original_text=original_text,
+                        parameter_schema={},
+                        confidence=0.98,
+                        proof_status="confirmed",
+                    )
+                )
 
     @staticmethod
     def _user_dict(user: User) -> dict[str, Any]:
@@ -148,8 +217,15 @@ class SqlAlchemyStore(DemoStore):
             "updated_at": _iso(user.updated_at),
         }
 
-    @staticmethod
-    def _round_dict(round_item: AuditRound) -> dict[str, Any]:
+    def _round_dict(self, round_item: AuditRound, session: Session | None = None) -> dict[str, Any]:
+        standards = []
+        if session:
+            standards = [
+                self._round_standard_dict(session, item)
+                for item in session.scalars(
+                    select(RoundStandard).where(RoundStandard.round_id == round_item.id).order_by(RoundStandard.created_at)
+                )
+            ]
         return {
             "id": str(round_item.id),
             "task_id": str(round_item.task_id),
@@ -159,7 +235,7 @@ class SqlAlchemyStore(DemoStore):
             "manual_conclusion": round_item.manual_conclusion,
             "round_note": round_item.round_note,
             "basic_info_snapshot": round_item.basic_info_snapshot,
-            "standards": [],
+            "standards": standards,
             "created_at": _iso(round_item.created_at),
             "updated_at": _iso(round_item.updated_at),
         }
@@ -180,6 +256,99 @@ class SqlAlchemyStore(DemoStore):
             "status": file_item.status,
             "created_at": _iso(file_item.created_at),
             "updated_at": _iso(file_item.updated_at),
+        }
+
+    @staticmethod
+    def _clause_dict(clause: StandardClause) -> dict[str, Any]:
+        return {
+            "id": str(clause.id),
+            "parse_revision_id": str(clause.parse_revision_id),
+            "clause_code": clause.clause_code,
+            "title": clause.title,
+            "clause_level": clause.clause_level,
+            "clause_type": clause.clause_type,
+            "constraint_level": clause.constraint_level,
+            "original_text": clause.original_text,
+            "parameter_schema": clause.parameter_schema,
+            "page_no": clause.page_no,
+            "confidence": float(clause.confidence),
+            "proof_status": clause.proof_status,
+        }
+
+    def _parse_revision_dict(self, session: Session, revision: StandardParseRevision | None, include_clauses: bool = False) -> dict[str, Any] | None:
+        if not revision:
+            return None
+        item = {
+            "id": str(revision.id),
+            "revision_no": revision.revision_no,
+            "impact_flag": revision.impact_flag,
+            "status": revision.status,
+            "published_at": _iso(revision.published_at),
+            "clauses": [],
+        }
+        if include_clauses:
+            item["clauses"] = [
+                self._clause_dict(clause)
+                for clause in session.scalars(
+                    select(StandardClause).where(StandardClause.parse_revision_id == revision.id).order_by(StandardClause.clause_code)
+                )
+            ]
+        return item
+
+    def _standard_version_dict(self, session: Session, version: StandardVersion, include_clauses: bool = False) -> dict[str, Any]:
+        standard = session.get(Standard, version.standard_id)
+        revision = session.scalar(
+            select(StandardParseRevision)
+            .where(StandardParseRevision.standard_version_id == version.id)
+            .order_by(StandardParseRevision.created_at.desc())
+            .limit(1)
+        )
+        return {
+            "id": str(version.id),
+            "standard_id": str(version.standard_id),
+            "standard_code": standard.standard_code if standard else None,
+            "standard_name": standard.standard_name if standard else None,
+            "full_code": version.full_code,
+            "version_label": version.version_label,
+            "publish_date": version.publish_date.isoformat() if version.publish_date else None,
+            "implement_date": version.implement_date.isoformat() if version.implement_date else None,
+            "abolish_date": version.abolish_date.isoformat() if version.abolish_date else None,
+            "publisher": version.publisher,
+            "mandatory_flag": version.mandatory_flag,
+            "status": version.status,
+            "latest_parse_revision": self._parse_revision_dict(session, revision, include_clauses),
+        }
+
+    def _standard_dict(self, session: Session, standard: Standard, include_clauses: bool = False) -> dict[str, Any]:
+        versions = list(
+            session.scalars(select(StandardVersion).where(StandardVersion.standard_id == standard.id).order_by(StandardVersion.version_label.desc()))
+        )
+        return {
+            "id": str(standard.id),
+            "standard_code": standard.standard_code,
+            "standard_name": standard.standard_name,
+            "standard_type": standard.standard_type,
+            "scope_text": standard.scope_text,
+            "keywords": standard.keywords or [],
+            "alias_texts": standard.alias_texts or [],
+            "status": standard.status,
+            "versions": [self._standard_version_dict(session, version, include_clauses) for version in versions],
+        }
+
+    def _round_standard_dict(self, session: Session, item: RoundStandard) -> dict[str, Any]:
+        version = session.get(StandardVersion, item.standard_version_id)
+        standard = session.get(Standard, version.standard_id) if version else None
+        return {
+            "id": str(item.id),
+            "round_id": str(item.round_id),
+            "standard_version_id": str(item.standard_version_id),
+            "parse_revision_id": str(item.parse_revision_id),
+            "standard_code": version.full_code if version else None,
+            "standard_name": standard.standard_name if standard else None,
+            "source_type": item.source_type,
+            "snapshot_no": item.snapshot_no,
+            "status": "confirmed" if item.snapshot_no.startswith("SNAPSHOT-") else "selected",
+            "skip_reason": item.skip_reason,
         }
 
     def _task_dict(self, session: Session, task: AuditTask) -> dict[str, Any]:
@@ -210,7 +379,7 @@ class SqlAlchemyStore(DemoStore):
             "final_conclusion": task.final_conclusion,
             "round_note": current_round.round_note if current_round else None,
             "files": [self._file_dict(item) for item in files],
-            "rounds": [self._round_dict(item) for item in rounds],
+            "rounds": [self._round_dict(item, session) for item in rounds],
             "issues": issue_ids,
             "created_at": _iso(task.created_at),
             "updated_at": _iso(task.updated_at),
@@ -327,6 +496,164 @@ class SqlAlchemyStore(DemoStore):
         with self.session_factory() as session:
             task = session.get(AuditTask, task_uuid)
             return self._task_dict(session, task) if task else None
+
+    def list_standards(self) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            standards = session.scalars(select(Standard).order_by(Standard.standard_code)).all()
+            return [self._standard_dict(session, item) for item in standards]
+
+    def get_standard(self, standard_id: str) -> dict[str, Any] | None:
+        standard_uuid = _uuid(standard_id)
+        if not standard_uuid:
+            return None
+        with self.session_factory() as session:
+            standard = session.get(Standard, standard_uuid)
+            return self._standard_dict(session, standard, include_clauses=True) if standard else None
+
+    def create_standard(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        with self.session_factory() as session, session.begin():
+            if session.scalar(select(Standard.id).where(Standard.standard_code == payload["standard_code"])):
+                return None
+            standard = Standard(
+                standard_code=payload["standard_code"],
+                standard_name=payload["standard_name"],
+                standard_type=payload["standard_type"],
+                scope_text=payload.get("scope_text"),
+                keywords=payload.get("keywords") or [],
+                alias_texts=payload.get("alias_texts") or [],
+                status="draft",
+            )
+            session.add(standard)
+            session.flush()
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="standard",
+                entity_id=standard.id,
+                action_code="standard.create",
+                after_snapshot={"standard_code": standard.standard_code},
+                trace_id=payload.get("_trace_id"),
+            )
+            return self._standard_dict(session, standard)
+
+    def list_standard_versions(self, standard_id: str) -> list[dict[str, Any]]:
+        standard_uuid = _uuid(standard_id)
+        if not standard_uuid:
+            return []
+        with self.session_factory() as session:
+            versions = session.scalars(
+                select(StandardVersion)
+                .where(StandardVersion.standard_id == standard_uuid)
+                .order_by(StandardVersion.version_label.desc())
+            ).all()
+            return [self._standard_version_dict(session, item) for item in versions]
+
+    def get_standard_version(self, version_id: str) -> dict[str, Any] | None:
+        version_uuid = _uuid(version_id)
+        if not version_uuid:
+            return None
+        with self.session_factory() as session:
+            version = session.get(StandardVersion, version_uuid)
+            return self._standard_version_dict(session, version, include_clauses=True) if version else None
+
+    def create_standard_version(self, standard_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        standard_uuid = _uuid(standard_id)
+        if not standard_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            standard = session.get(Standard, standard_uuid)
+            if not standard:
+                return None
+            full_code = payload.get("full_code") or f"{standard.standard_code}-{payload['version_label']}"
+            if session.scalar(select(StandardVersion.id).where(StandardVersion.full_code == full_code)):
+                return None
+            version = StandardVersion(
+                standard_id=standard.id,
+                full_code=full_code,
+                version_label=payload["version_label"],
+                publish_date=payload.get("publish_date"),
+                implement_date=payload.get("implement_date"),
+                abolish_date=payload.get("abolish_date"),
+                publisher=payload.get("publisher"),
+                mandatory_flag=payload.get("mandatory_flag", False),
+                status=payload.get("status", "draft"),
+            )
+            session.add(version)
+            session.flush()
+            revision = StandardParseRevision(
+                standard_version_id=version.id,
+                revision_no="P1",
+                revision_payload={"source": "manual", "clause_count": 0},
+                impact_flag="no_impact",
+                status="draft",
+            )
+            session.add(revision)
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="standard_version",
+                entity_id=version.id,
+                action_code="standard_version.create",
+                after_snapshot={"full_code": version.full_code},
+                trace_id=payload.get("_trace_id"),
+            )
+            session.flush()
+            return self._standard_version_dict(session, version)
+
+    def publish_standard_version(self, version_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        version_uuid = _uuid(version_id)
+        if not version_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            version = session.get(StandardVersion, version_uuid)
+            if not version:
+                return None
+            version.status = "active"
+            standard = session.get(Standard, version.standard_id)
+            if standard:
+                standard.status = "active"
+            revision = session.scalar(
+                select(StandardParseRevision)
+                .where(StandardParseRevision.standard_version_id == version.id)
+                .order_by(StandardParseRevision.created_at.desc())
+                .limit(1)
+            )
+            if revision:
+                revision.status = "published"
+                revision.published_at = datetime.now(UTC)
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="standard_version",
+                entity_id=version.id,
+                action_code="standard_version.publish",
+                after_snapshot={"status": "active"},
+                trace_id=payload.get("_trace_id"),
+            )
+            session.flush()
+            return self._standard_version_dict(session, version)
+
+    def list_standard_clauses(self, version_id: str) -> list[dict[str, Any]] | None:
+        version_uuid = _uuid(version_id)
+        if not version_uuid:
+            return None
+        with self.session_factory() as session:
+            if not session.get(StandardVersion, version_uuid):
+                return None
+            revision = session.scalar(
+                select(StandardParseRevision)
+                .where(StandardParseRevision.standard_version_id == version_uuid)
+                .order_by(StandardParseRevision.created_at.desc())
+                .limit(1)
+            )
+            if not revision:
+                return []
+            return [
+                self._clause_dict(item)
+                for item in session.scalars(
+                    select(StandardClause).where(StandardClause.parse_revision_id == revision.id).order_by(StandardClause.clause_code)
+                )
+            ]
 
     def _next_task_no(self, session: Session) -> str:
         year = datetime.now(UTC).year
@@ -491,7 +818,7 @@ class SqlAlchemyStore(DemoStore):
                 trace_id=payload.get("_trace_id"),
             )
             session.flush()
-            return self._round_dict(round_item)
+            return self._round_dict(round_item, session)
 
     def get_round(self, round_id: str) -> dict[str, Any] | None:
         round_uuid = _uuid(round_id)
@@ -499,7 +826,7 @@ class SqlAlchemyStore(DemoStore):
             return None
         with self.session_factory() as session:
             round_item = session.get(AuditRound, round_uuid)
-            return self._round_dict(round_item) if round_item else None
+            return self._round_dict(round_item, session) if round_item else None
 
     def start_audit(self, round_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         round_uuid = _uuid(round_id)
@@ -563,19 +890,88 @@ class SqlAlchemyStore(DemoStore):
         }
 
     def add_standard_to_round(self, round_id: str, payload: dict) -> dict | None:
-        round_item = self.get_round(round_id)
-        if not round_item:
+        round_uuid = _uuid(round_id)
+        version_uuid = _uuid(payload.get("standard_version_id"))
+        if not round_uuid or not version_uuid:
             return None
-        return {
-            "id": str(uuid4()),
-            "round_id": round_id,
-            "standard_version_id": payload.get("standard_version_id"),
-            "standard_code": payload.get("standard_code"),
-            "standard_name": payload.get("standard_name"),
-            "source_type": payload.get("source_type", "document_reference"),
-            "status": "selected",
-            "skip_reason": None,
-        }
+        with self.session_factory() as session, session.begin():
+            round_item = session.get(AuditRound, round_uuid)
+            version = session.get(StandardVersion, version_uuid)
+            if not round_item or not version:
+                return None
+            revision = session.scalar(
+                select(StandardParseRevision)
+                .where(StandardParseRevision.standard_version_id == version.id, StandardParseRevision.status == "published")
+                .order_by(StandardParseRevision.created_at.desc())
+                .limit(1)
+            )
+            if not revision:
+                return None
+            existing = session.scalar(
+                select(RoundStandard).where(
+                    RoundStandard.round_id == round_item.id,
+                    RoundStandard.standard_version_id == version.id,
+                )
+            )
+            if existing:
+                return self._round_standard_dict(session, existing)
+            selected = RoundStandard(
+                round_id=round_item.id,
+                standard_version_id=version.id,
+                parse_revision_id=revision.id,
+                source_type=payload.get("source_type", "document_reference"),
+                selected_by_user_id=_uuid(payload.get("_operator_user_id")),
+                snapshot_no=f"DRAFT-R{round_item.round_no}",
+            )
+            session.add(selected)
+            session.flush()
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="round_standard",
+                entity_id=selected.id,
+                action_code="round_standard.select",
+                after_snapshot={"round_id": str(round_item.id), "standard_version_id": str(version.id)},
+                trace_id=payload.get("_trace_id"),
+            )
+            return self._round_standard_dict(session, selected)
+
+    def list_round_standards(self, round_id: str) -> list[dict[str, Any]] | None:
+        round_uuid = _uuid(round_id)
+        if not round_uuid:
+            return None
+        with self.session_factory() as session:
+            if not session.get(AuditRound, round_uuid):
+                return None
+            return [
+                self._round_standard_dict(session, item)
+                for item in session.scalars(
+                    select(RoundStandard).where(RoundStandard.round_id == round_uuid).order_by(RoundStandard.created_at)
+                )
+            ]
+
+    def confirm_round_standard(self, round_id: str, round_standard_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        round_uuid = _uuid(round_id)
+        item_uuid = _uuid(round_standard_id)
+        if not round_uuid or not item_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            round_item = session.get(AuditRound, round_uuid)
+            selected = session.get(RoundStandard, item_uuid)
+            if not round_item or not selected or selected.round_id != round_item.id:
+                return None
+            selected.snapshot_no = f"SNAPSHOT-R{round_item.round_no}"
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="round_standard",
+                entity_id=selected.id,
+                action_code="round_standard.confirm",
+                after_snapshot={"snapshot_no": selected.snapshot_no},
+                trace_id=payload.get("_trace_id"),
+            )
+            session.flush()
+            return self._round_standard_dict(session, selected)
 
     def list_operation_logs(self) -> list[dict[str, Any]]:
         with self.session_factory() as session:

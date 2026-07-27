@@ -22,6 +22,7 @@ from coal_platform.schemas import (
     RuleVersionCreateRequest,
     StandardCreateRequest,
     StandardRelationPayload,
+    StandardVersionCreateRequest,
     TaskCreateRequest,
 )
 from coal_platform.store_protocol import PlatformStore
@@ -41,6 +42,7 @@ users_router = APIRouter(prefix="/users", tags=["users"], dependencies=[Depends(
 tasks_router = APIRouter(prefix="/tasks", tags=["tasks"], dependencies=[Depends(require_user)])
 rounds_router = APIRouter(prefix="/rounds", tags=["rounds"], dependencies=[Depends(require_user)])
 standards_router = APIRouter(prefix="/standards", tags=["standards"], dependencies=[Depends(require_user)])
+standard_versions_router = APIRouter(prefix="/standard-versions", tags=["standard-versions"], dependencies=[Depends(require_user)])
 rules_router = APIRouter(prefix="/rules", tags=["rules"], dependencies=[Depends(require_user)])
 executors_router = APIRouter(prefix="/executors", tags=["executors"], dependencies=[Depends(require_user)])
 issues_router = APIRouter(prefix="/issues", tags=["issues"], dependencies=[Depends(require_user)])
@@ -238,10 +240,44 @@ def add_round_standard(round_id: str, payload: dict, request: Request) -> JSONRe
     task = request.app.state.store.get_task(round_item.get("task_id", ""))
     if task:
         _ensure_task_access(request, task)
-    item = request.app.state.store.add_standard_to_round(round_id, payload)
+    data = dict(payload)
+    data.update(_operation_context(request))
+    item = request.app.state.store.add_standard_to_round(round_id, data)
     if not item:
         raise HTTPException(status_code=404, detail="round not found")
     return JSONResponse(status_code=201, content=_ok(item, "round standard selected"))
+
+
+@rounds_router.get("/{round_id}/standards")
+def list_round_standards(round_id: str, request: Request) -> dict:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if task:
+        _ensure_task_access(request, task)
+    items = request.app.state.store.list_round_standards(round_id)
+    if items is None:
+        raise HTTPException(status_code=404, detail="round not found")
+    return _ok(items)
+
+
+@rounds_router.post("/{round_id}/standards/{round_standard_id}/confirm")
+def confirm_round_standard(round_id: str, round_standard_id: str, request: Request) -> dict:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if task:
+        _ensure_task_access(request, task)
+    item = request.app.state.store.confirm_round_standard(
+        round_id,
+        round_standard_id,
+        _operation_context(request),
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="round standard not found")
+    return _ok(item, "round standard confirmed")
 
 
 @rounds_router.get("/{round_id}/dynamic-items")
@@ -297,17 +333,41 @@ def list_standards(request: Request) -> dict:
     return _ok(request.app.state.store.list_standards())
 
 
+@standards_router.get("/search")
+def search_standards(request: Request, q: str = "") -> dict:
+    query = q.strip().lower()
+    items = request.app.state.store.list_standards()
+    if query:
+        items = [
+            item
+            for item in items
+            if query in item.get("standard_code", "").lower()
+            or query in item.get("standard_name", "").lower()
+            or query in (item.get("scope_text") or "").lower()
+        ]
+    return _ok(items)
+
+
 @standards_router.post("", dependencies=[Depends(require_admin)])
 def create_standard(payload: StandardCreateRequest, request: Request) -> JSONResponse:
-    standard = {
-        "id": "temp",
-        "standard_code": payload.standard_code,
-        "standard_name": payload.standard_name,
-        "standard_type": payload.standard_type,
-        "scope_text": payload.scope_text,
-        "status": "draft",
-    }
+    data = payload.model_dump(mode="json")
+    data.update(_operation_context(request))
+    standard = request.app.state.store.create_standard(data)
+    if not standard:
+        raise HTTPException(status_code=409, detail="standard code already exists")
     return JSONResponse(status_code=201, content=_ok(standard, "standard created"))
+
+
+@standards_router.post("/{standard_id}/versions", dependencies=[Depends(require_admin)])
+def create_standard_version(standard_id: str, payload: StandardVersionCreateRequest, request: Request) -> JSONResponse:
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    if not request.app.state.store.get_standard(standard_id):
+        raise HTTPException(status_code=404, detail="standard not found")
+    version = request.app.state.store.create_standard_version(standard_id, data)
+    if not version:
+        raise HTTPException(status_code=409, detail="standard version already exists")
+    return JSONResponse(status_code=201, content=_ok(version, "standard version created"))
 
 
 @standards_router.get("/{standard_id}")
@@ -316,6 +376,40 @@ def get_standard(standard_id: str, request: Request) -> dict:
     if not standard:
         raise HTTPException(status_code=404, detail="standard not found")
     return _ok(standard)
+
+
+@standards_router.get("/{standard_id}/versions")
+def list_standard_versions(standard_id: str, request: Request) -> dict:
+    if not request.app.state.store.get_standard(standard_id):
+        raise HTTPException(status_code=404, detail="standard not found")
+    return _ok(request.app.state.store.list_standard_versions(standard_id))
+
+
+@standard_versions_router.get("/{standard_version_id}")
+def get_standard_version(standard_version_id: str, request: Request) -> dict:
+    version = request.app.state.store.get_standard_version(standard_version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="standard version not found")
+    return _ok(version)
+
+
+@standard_versions_router.post("/{standard_version_id}/publish", dependencies=[Depends(require_admin)])
+def publish_standard_version(standard_version_id: str, request: Request) -> dict:
+    version = request.app.state.store.publish_standard_version(
+        standard_version_id,
+        _operation_context(request),
+    )
+    if not version:
+        raise HTTPException(status_code=404, detail="standard version not found")
+    return _ok(version, "standard version published")
+
+
+@standard_versions_router.get("/{standard_version_id}/clauses")
+def list_standard_clauses(standard_version_id: str, request: Request) -> dict:
+    clauses = request.app.state.store.list_standard_clauses(standard_version_id)
+    if clauses is None:
+        raise HTTPException(status_code=404, detail="standard version not found")
+    return _ok(clauses)
 
 
 @standards_router.post("/{standard_id}/versions/{version_id}/relations", dependencies=[Depends(require_admin)])
@@ -482,6 +576,7 @@ def register_routers(app: FastAPI, prefix: str = "/api/v1") -> None:
     app.include_router(tasks_router, prefix=prefix)
     app.include_router(rounds_router, prefix=prefix)
     app.include_router(standards_router, prefix=prefix)
+    app.include_router(standard_versions_router, prefix=prefix)
     app.include_router(rules_router, prefix=prefix)
     app.include_router(executors_router, prefix=prefix)
     app.include_router(issues_router, prefix=prefix)

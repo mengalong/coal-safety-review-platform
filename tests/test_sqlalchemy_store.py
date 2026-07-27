@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from coal_platform.database import Base
 from coal_platform.main import create_app
-from coal_platform.models import AuditRun, OperationLog, QueueJob
+from coal_platform.models import AuditRun, OperationLog, QueueJob, RoundStandard, Standard, StandardVersion
 from coal_platform.sqlalchemy_store import SqlAlchemyStore
 from coal_platform.storage import InMemoryObjectStorage
 from coal_platform.store import DemoStore
@@ -93,6 +93,61 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(AuditRun)) == 1
         assert session.scalar(select(func.count()).select_from(QueueJob)) == 1
+
+
+def test_database_store_persists_standard_catalog_and_round_snapshot(tmp_path: Path) -> None:
+    store, factory = _store(tmp_path / "standards.db")
+    reviewer = store.authenticate("liming", DemoStore.demo_password)
+    assert reviewer
+    standards = store.list_standards()
+    assert standards and standards[0]["versions"]
+
+    created = store.create_standard(
+        {
+            "standard_code": "AQ 9999",
+            "standard_name": "数据库测试标准",
+            "standard_type": "安全生产标准",
+            "_operator_user_id": reviewer["id"],
+        }
+    )
+    assert created
+    version = store.create_standard_version(
+        created["id"],
+        {
+            "version_label": "2026",
+            "full_code": "AQ 9999-2026",
+            "publish_date": datetime(2026, 1, 15, tzinfo=UTC).date(),
+            "implement_date": datetime(2026, 7, 1, tzinfo=UTC).date(),
+            "abolish_date": datetime(2030, 12, 31, tzinfo=UTC).date(),
+            "_operator_user_id": reviewer["id"],
+        },
+    )
+    assert version
+    assert version["publish_date"] == "2026-01-15"
+    assert version["implement_date"] == "2026-07-01"
+    assert version["abolish_date"] == "2030-12-31"
+    published = store.publish_standard_version(version["id"], {"_operator_user_id": reviewer["id"]})
+    assert published and published["status"] == "active"
+
+    task = store.create_task({"owner_user_id": reviewer["id"], "_operator_user_id": reviewer["id"]})
+    selected = store.add_standard_to_round(
+        task["current_round_id"],
+        {"standard_version_id": version["id"], "_operator_user_id": reviewer["id"]},
+    )
+    assert selected
+    confirmed = store.confirm_round_standard(
+        task["current_round_id"],
+        selected["id"],
+        {"_operator_user_id": reviewer["id"]},
+    )
+    assert confirmed and confirmed["status"] == "confirmed"
+    reloaded = store.get_task(task["id"])
+    assert reloaded and reloaded["rounds"][0]["standards"][0]["standard_code"] == "AQ 9999-2026"
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(Standard)) == 6
+        assert session.scalar(select(func.count()).select_from(StandardVersion)) == 6
+        assert session.scalar(select(func.count()).select_from(RoundStandard)) == 1
 
 
 def test_database_store_persists_and_revokes_auth_session(tmp_path: Path) -> None:

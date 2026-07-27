@@ -141,3 +141,98 @@ def test_adding_standard_requires_an_existing_round() -> None:
         )
 
         assert response.status_code == 404
+
+
+def test_standard_catalog_and_round_snapshot_workflow() -> None:
+    with _client() as client:
+        headers = _login(client)
+        standards = client.get("/api/v1/standards", headers=headers)
+        assert standards.status_code == 200
+        standard = standards.json()["data"][0]
+        version = standard["versions"][0]
+
+        detail = client.get(f"/api/v1/standards/{standard['id']}", headers=headers)
+        clauses = client.get(f"/api/v1/standard-versions/{version['id']}/clauses", headers=headers)
+        assert detail.status_code == 200
+        assert clauses.status_code == 200
+        assert clauses.json()["data"]
+
+        task = client.post("/api/v1/tasks", headers=headers, json={}).json()["data"]
+        selected = client.post(
+            f"/api/v1/rounds/{task['current_round_id']}/standards",
+            headers=headers,
+            json={"standard_version_id": version["id"], "source_type": "manual_selection"},
+        )
+        assert selected.status_code == 201
+        selected_id = selected.json()["data"]["id"]
+        confirmed = client.post(
+            f"/api/v1/rounds/{task['current_round_id']}/standards/{selected_id}/confirm",
+            headers=headers,
+        )
+        assert confirmed.status_code == 200
+        assert confirmed.json()["data"]["status"] == "confirmed"
+
+        round_standards = client.get(
+            f"/api/v1/rounds/{task['current_round_id']}/standards",
+            headers=headers,
+        )
+        assert round_standards.json()["data"][0]["standard_version_id"] == version["id"]
+
+
+def test_only_admin_can_create_and_publish_standard_versions() -> None:
+    with _client() as client:
+        reviewer_headers = _login(client)
+        payload = {
+            "standard_code": "AQ 9999",
+            "standard_name": "接口测试标准",
+            "standard_type": "安全生产标准",
+        }
+        assert client.post("/api/v1/standards", headers=reviewer_headers, json=payload).status_code == 403
+
+        admin_headers = _login(client, login_name="admin")
+        seeded_standard = client.get("/api/v1/standards", headers=admin_headers).json()["data"][0]
+        seeded_version = client.post(
+            f"/api/v1/standards/{seeded_standard['id']}/versions",
+            headers=admin_headers,
+            json={"version_label": "2099", "full_code": f"{seeded_standard['standard_code']}-2099"},
+        )
+        assert seeded_version.status_code == 201
+
+        created = client.post("/api/v1/standards", headers=admin_headers, json=payload)
+        assert created.status_code == 201
+        standard_id = created.json()["data"]["id"]
+        version = client.post(
+            f"/api/v1/standards/{standard_id}/versions",
+            headers=admin_headers,
+            json={
+                "version_label": "2026",
+                "full_code": "AQ 9999-2026",
+                "publish_date": "2026-01-15",
+                "implement_date": "2026-07-01",
+                "abolish_date": "2030-12-31",
+            },
+        )
+        assert version.status_code == 201
+        assert version.json()["data"]["publish_date"] == "2026-01-15"
+        assert version.json()["data"]["implement_date"] == "2026-07-01"
+        assert version.json()["data"]["abolish_date"] == "2030-12-31"
+        published = client.post(
+            f"/api/v1/standard-versions/{version.json()['data']['id']}/publish",
+            headers=admin_headers,
+        )
+        assert published.status_code == 200
+        assert published.json()["data"]["status"] == "active"
+
+        duplicate = client.post(
+            f"/api/v1/standards/{standard_id}/versions",
+            headers=admin_headers,
+            json={"version_label": "2026", "full_code": "AQ 9999-2026"},
+        )
+        assert duplicate.status_code == 409
+
+        missing_standard = client.post(
+            "/api/v1/standards/not-found/versions",
+            headers=admin_headers,
+            json={"version_label": "2026"},
+        )
+        assert missing_standard.status_code == 404

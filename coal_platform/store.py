@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from threading import RLock
 from uuid import uuid4
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _json_date(value: date | str | None) -> str | None:
+    return value.isoformat() if isinstance(value, date) else value
 
 
 class DemoStore:
@@ -272,7 +276,7 @@ class DemoStore:
                     "publish_date": "2023-12-20",
                     "implement_date": "2024-07-01",
                     "status": status,
-                    "parse_revision": {
+                    "latest_parse_revision": {
                         "id": str(uuid4()),
                         "revision_no": "P1",
                         "status": "published",
@@ -512,6 +516,103 @@ class DemoStore:
         _key, standard = self._find_record(self.standards, standard_id)
         return deepcopy(standard) if standard else None
 
+    def create_standard(self, payload: dict) -> dict | None:
+        with self._lock:
+            if any(item["standard_code"] == payload["standard_code"] for item in self.standards.values()):
+                return None
+            standard_id = str(uuid4())
+            standard = {
+                "id": standard_id,
+                "standard_code": payload["standard_code"],
+                "standard_name": payload["standard_name"],
+                "standard_type": payload["standard_type"],
+                "scope_text": payload.get("scope_text"),
+                "status": "draft",
+                "versions": [],
+            }
+            self.standards[standard_id] = standard
+            return deepcopy(standard)
+
+    def list_standard_versions(self, standard_id: str) -> list[dict]:
+        standard = self.get_standard(standard_id)
+        return standard.get("versions", []) if standard else []
+
+    def get_standard_version(self, version_id: str) -> dict | None:
+        for standard in self.standards.values():
+            for version in standard.get("versions", []):
+                if version.get("id") == version_id:
+                    item = deepcopy(version)
+                    item["standard_code"] = standard["standard_code"]
+                    item["standard_name"] = standard["standard_name"]
+                    return item
+        return None
+
+    def create_standard_version(self, standard_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            _key, standard = self._find_record(self.standards, standard_id)
+            if not standard:
+                return None
+            full_code = payload.get("full_code") or f"{standard['standard_code']}-{payload['version_label']}"
+            if any(
+                version.get("full_code") == full_code
+                for catalog_item in self.standards.values()
+                for version in catalog_item.get("versions", [])
+            ):
+                return None
+            version = {
+                "id": str(uuid4()),
+                "standard_id": standard_id,
+                "full_code": full_code,
+                "version_label": payload["version_label"],
+                "publish_date": _json_date(payload.get("publish_date")),
+                "implement_date": _json_date(payload.get("implement_date")),
+                "abolish_date": _json_date(payload.get("abolish_date")),
+                "publisher": payload.get("publisher"),
+                "mandatory_flag": payload.get("mandatory_flag", False),
+                "status": payload.get("status", "draft"),
+                "latest_parse_revision": {
+                    "id": str(uuid4()),
+                    "revision_no": "P1",
+                    "status": "draft",
+                    "impact_flag": "no_impact",
+                    "clauses": [],
+                },
+            }
+            standard.setdefault("versions", []).append(version)
+            return deepcopy(version)
+
+    def publish_standard_version(self, version_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            for standard in self.standards.values():
+                for version in standard.get("versions", []):
+                    if version.get("id") != version_id:
+                        continue
+                    version["status"] = "active"
+                    standard["status"] = "有效"
+                    version["latest_parse_revision"]["status"] = "published"
+                    return deepcopy(version)
+        return None
+
+    def list_standard_clauses(self, version_id: str) -> list[dict] | None:
+        version = self.get_standard_version(version_id)
+        if not version:
+            return None
+        return deepcopy(version.get("latest_parse_revision", {}).get("clauses", []))
+
+    def list_round_standards(self, round_id: str) -> list[dict] | None:
+        for task in self.tasks.values():
+            for round_item in task.get("rounds", []):
+                if round_item.get("id") != round_id:
+                    continue
+                result = []
+                for item in round_item.get("standards", []):
+                    if isinstance(item, str):
+                        result.append({"id": None, "round_id": round_id, "standard_code": item, "status": "confirmed"})
+                    else:
+                        result.append(deepcopy(item))
+                return result
+        return None
+
     def list_rules(self) -> list[dict]:
         return [deepcopy(item) for item in self.rules.values()]
 
@@ -648,15 +749,35 @@ class DemoStore:
                 break
         if not round_item:
             return None
+        version = self.get_standard_version(payload.get("standard_version_id"))
+        if not version:
+            return None
         item = {
             "id": str(uuid4()),
             "round_id": round_id,
             "standard_version_id": payload.get("standard_version_id") or str(uuid4()),
-            "standard_code": payload.get("standard_code"),
-            "standard_name": payload.get("standard_name"),
+            "standard_code": version["full_code"],
+            "standard_name": version["standard_name"],
             "source_type": payload.get("source_type", "document_reference"),
             "status": "selected",
             "skip_reason": None,
         }
         round_item.setdefault("standards", []).append(item)
         return deepcopy(item)
+
+    def confirm_round_standard(self, round_id: str, round_standard_id: str, payload: dict) -> dict | None:
+        standards = self.list_round_standards(round_id)
+        if standards is None:
+            return None
+        for item in standards:
+            if item.get("id") == round_standard_id:
+                item["status"] = "confirmed"
+                item["snapshot_no"] = f"R-{round_id[:8]}"
+                for task in self.tasks.values():
+                    for round_item in task.get("rounds", []):
+                        if round_item.get("id") == round_id:
+                            for stored in round_item.get("standards", []):
+                                if isinstance(stored, dict) and stored.get("id") == round_standard_id:
+                                    stored.update(item)
+                            return deepcopy(item)
+        return None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -42,6 +43,17 @@ class StandardCreateRequest(BaseModel):
     standard_name: str
     standard_type: str
     scope_text: str | None = None
+
+
+class StandardVersionCreateRequest(BaseModel):
+    version_label: str
+    full_code: str | None = None
+    publish_date: date | None = None
+    implement_date: date | None = None
+    abolish_date: date | None = None
+    publisher: str | None = None
+    mandatory_flag: bool = False
+    status: str = "draft"
 
 
 class RuleCreateRequest(BaseModel):
