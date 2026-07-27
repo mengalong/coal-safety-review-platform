@@ -236,6 +236,10 @@ textarea.control { min-height: 94px; height: auto; padding-top: 10px; resize: ve
 .upload-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; }
 .upload-zone { min-height: 210px; display: grid; place-items: center; padding: 28px; border: 1px dashed #9bb5be; border-radius: 8px; background: #f7fafb; text-align: center; cursor: pointer; }
 .upload-zone:hover { border-color: var(--brand); background: #f1f8f8; }
+.file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; }
+.file-input:focus + .upload-zone { border-color: var(--brand); box-shadow: 0 0 0 3px rgb(36 80 255 / 14%); }
+.compact-upload { min-height: 160px; }
+.compact-empty { min-height: 220px; }
 .upload-icon { width: 46px; height: 46px; display: grid; place-items: center; margin: 0 auto 13px; border-radius: 50%; color: var(--brand); background: var(--surface-3); }
 .upload-icon svg { width: 22px; height: 22px; }
 .upload-zone h2 { margin-bottom: 6px; }
