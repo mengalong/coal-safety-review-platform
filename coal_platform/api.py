@@ -278,11 +278,18 @@ def list_coverage(round_id: str) -> dict:
 
 
 @rounds_router.post("/{round_id}/audit/start")
-def start_audit(round_id: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=202,
-        content=_ok({"round_id": round_id, "audit_run_id": "demo_run", "status": "queued"}, "audit queued"),
-    )
+def start_audit(round_id: str, request: Request) -> JSONResponse:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    run = request.app.state.store.start_audit(round_id, _operation_context(request))
+    if not run:
+        raise HTTPException(status_code=404, detail="round not found")
+    return JSONResponse(status_code=202, content=_ok(run, "audit queued"))
 
 
 @standards_router.get("")

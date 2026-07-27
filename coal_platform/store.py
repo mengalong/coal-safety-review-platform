@@ -18,6 +18,7 @@ class DemoStore:
         self.users: dict[str, dict] = {}
         self.auth_sessions: dict[str, dict] = {}
         self.tasks: dict[str, dict] = {}
+        self.audit_runs: dict[str, dict] = {}
         self.standards: dict[str, dict] = {}
         self.rules: dict[str, dict] = {}
         self.executors: dict[str, dict] = {}
@@ -553,6 +554,7 @@ class DemoStore:
             }
             task["current_round_no"] = round_no
             task["current_round_id"] = round_id
+            task["status"] = "in_new_round"
             task["rounds"].append(new_round)
             task["updated_at"] = _now()
             return deepcopy(new_round)
@@ -561,8 +563,55 @@ class DemoStore:
         for task in self.tasks.values():
             for item in task.get("rounds", []):
                 if item.get("id") == round_id:
-                    return deepcopy(item)
+                    round_item = deepcopy(item)
+                    round_item["task_id"] = task["id"]
+                    return round_item
         return None
+
+    def start_audit(self, round_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            matching_task = None
+            matching_round = None
+            for task in self.tasks.values():
+                for item in task.get("rounds", []):
+                    if item.get("id") == round_id:
+                        matching_task = task
+                        matching_round = item
+                        break
+                if matching_task:
+                    break
+            if not matching_task or not matching_round:
+                return None
+
+            active_run = next(
+                (
+                    run
+                    for run in self.audit_runs.values()
+                    if run["round_id"] == round_id and run["status"] in {"queued", "running"}
+                ),
+                None,
+            )
+            if active_run:
+                return deepcopy(active_run)
+
+            run_id = str(uuid4())
+            run = {
+                "id": run_id,
+                "audit_run_id": run_id,
+                "task_id": matching_task["id"],
+                "round_id": round_id,
+                "run_no": sum(1 for item in self.audit_runs.values() if item["round_id"] == round_id) + 1,
+                "status": "queued",
+                "job_id": str(uuid4()),
+                "job_status": "queued",
+                "created_at": _now(),
+            }
+            self.audit_runs[run_id] = run
+            matching_task["status"] = "auditing"
+            matching_task["updated_at"] = _now()
+            matching_round["status"] = "auditing"
+            matching_round["updated_at"] = _now()
+            return deepcopy(run)
 
     def update_issue(self, issue_id: str, payload: dict) -> dict | None:
         with self._lock:

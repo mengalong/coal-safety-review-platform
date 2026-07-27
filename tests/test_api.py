@@ -87,6 +87,24 @@ def test_task_creation_creates_the_initial_round() -> None:
         assert task["rounds"][0]["id"] == task["current_round_id"]
 
 
+def test_start_audit_updates_task_and_round_status() -> None:
+    with _client() as client:
+        headers = _login(client)
+        created = client.post("/api/v1/tasks", headers=headers, json={})
+        assert created.status_code == 201
+        task = created.json()["data"]
+        round_id = task["current_round_id"]
+
+        started = client.post(f"/api/v1/rounds/{round_id}/audit/start", headers=headers)
+
+        assert started.status_code == 202
+        run = started.json()["data"]
+        assert run["status"] == "queued"
+        detail = client.get(f"/api/v1/tasks/{task['id']}", headers=headers).json()["data"]
+        assert detail["status"] == "auditing"
+        assert detail["rounds"][0]["status"] == "auditing"
+
+
 def test_first_phase_read_endpoints_return_demo_data() -> None:
     with _client() as client:
         headers = _login(client)

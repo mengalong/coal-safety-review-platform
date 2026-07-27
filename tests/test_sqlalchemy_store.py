@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from coal_platform.database import Base
 from coal_platform.main import create_app
-from coal_platform.models import OperationLog
+from coal_platform.models import AuditRun, OperationLog, QueueJob
 from coal_platform.sqlalchemy_store import SqlAlchemyStore
 from coal_platform.storage import InMemoryObjectStorage
 from coal_platform.store import DemoStore
@@ -73,6 +73,26 @@ def test_database_store_persists_task_round_file_and_operation_logs(tmp_path: Pa
 
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(OperationLog)) == 3
+
+
+def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
+    store, factory = _store(tmp_path / "audit-run.db")
+    reviewer = store.authenticate("liming", DemoStore.demo_password)
+    assert reviewer
+
+    task = store.create_task({"owner_user_id": reviewer["id"], "_operator_user_id": reviewer["id"]})
+    run = store.start_audit(
+        task["current_round_id"],
+        {"_operator_user_id": reviewer["id"], "_trace_id": "audit-start-test"},
+    )
+
+    assert run and run["status"] == "queued"
+    reloaded = store.get_task(task["id"])
+    assert reloaded and reloaded["status"] == "auditing"
+    assert reloaded["rounds"][0]["status"] == "auditing"
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(AuditRun)) == 1
+        assert session.scalar(select(func.count()).select_from(QueueJob)) == 1
 
 
 def test_database_store_persists_and_revokes_auth_session(tmp_path: Path) -> None:

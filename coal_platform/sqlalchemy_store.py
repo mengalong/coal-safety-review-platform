@@ -8,7 +8,17 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from coal_platform.auth import hash_password, verify_password
-from coal_platform.models import AuditIssue, AuditRound, AuditTask, AuthSession, OperationLog, TaskFile, User
+from coal_platform.models import (
+    AuditIssue,
+    AuditRound,
+    AuditRun,
+    AuditTask,
+    AuthSession,
+    OperationLog,
+    QueueJob,
+    TaskFile,
+    User,
+)
 from coal_platform.store import DemoStore
 
 
@@ -490,6 +500,67 @@ class SqlAlchemyStore(DemoStore):
         with self.session_factory() as session:
             round_item = session.get(AuditRound, round_uuid)
             return self._round_dict(round_item) if round_item else None
+
+    def start_audit(self, round_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        round_uuid = _uuid(round_id)
+        if not round_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            round_item = session.get(AuditRound, round_uuid)
+            if not round_item:
+                return None
+            task = session.get(AuditTask, round_item.task_id)
+            if not task:
+                return None
+
+            active_run = session.scalar(
+                select(AuditRun)
+                .where(AuditRun.round_id == round_item.id, AuditRun.status.in_(["queued", "running"]))
+                .order_by(AuditRun.run_no.desc())
+                .limit(1)
+            )
+            if active_run:
+                return self._audit_run_dict(active_run)
+
+            latest_run_no = session.scalar(select(func.max(AuditRun.run_no)).where(AuditRun.round_id == round_item.id)) or 0
+            audit_run = AuditRun(round_id=round_item.id, run_no=latest_run_no + 1, status="queued")
+            session.add(audit_run)
+            session.flush()
+            job = QueueJob(
+                job_code=f"AUDIT-{audit_run.id}",
+                job_type="audit",
+                queue_name="audit",
+                payload={"audit_run_id": str(audit_run.id), "round_id": str(round_item.id)},
+                status="queued",
+            )
+            session.add(job)
+            task.status = "auditing"
+            round_item.status = "auditing"
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="audit_run",
+                entity_id=audit_run.id,
+                action_code="audit.start",
+                after_snapshot={"round_id": str(round_item.id), "status": "queued"},
+                trace_id=payload.get("_trace_id"),
+            )
+            session.flush()
+            return self._audit_run_dict(audit_run, job_id=job.id)
+
+    @staticmethod
+    def _audit_run_dict(audit_run: AuditRun, job_id: UUID | None = None) -> dict[str, Any]:
+        return {
+            "id": str(audit_run.id),
+            "audit_run_id": str(audit_run.id),
+            "round_id": str(audit_run.round_id),
+            "run_no": audit_run.run_no,
+            "status": audit_run.status,
+            "job_id": str(job_id) if job_id else None,
+            "job_status": "queued",
+            "created_at": _iso(audit_run.created_at),
+            "updated_at": _iso(audit_run.updated_at),
+        }
 
     def add_standard_to_round(self, round_id: str, payload: dict) -> dict | None:
         round_item = self.get_round(round_id)
