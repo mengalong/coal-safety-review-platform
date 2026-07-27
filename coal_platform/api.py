@@ -325,36 +325,26 @@ def assemble_round_rules(round_id: str, payload: RoundRuleAssemblyRequest, reque
 
 
 @rounds_router.get("/{round_id}/dynamic-items")
-def list_dynamic_items(round_id: str) -> dict:
-    return _ok(
-        [
-            {
-                "id": "demo_dynamic_1",
-                "round_id": round_id,
-                "source_clause": "MT/T 820-2023 5.3.2",
-                "subject_name": "驱动装置额定功率",
-                "applicability_status": "applicable",
-                "execution_mode": "deterministic",
-            }
-        ]
-    )
+def list_dynamic_items(round_id: str, request: Request) -> dict:
+    item = request.app.state.store.get_round(round_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(item.get("task_id", ""))
+    if task:
+        _ensure_task_access(request, task)
+    return _ok(request.app.state.store.list_dynamic_items(round_id) or [])
 
 
 @rounds_router.get("/{round_id}/coverage")
-def list_coverage(round_id: str) -> dict:
-    return _ok(
-        {
-            "round_id": round_id,
-            "summary": {
-                "executed_passed": 18,
-                "executed_failed": 2,
-                "unable_to_determine": 1,
-                "unsupported": 3,
-                "to_confirm": 0,
-            },
-            "items": [],
-        }
-    )
+def list_coverage(round_id: str, request: Request) -> dict:
+    item = request.app.state.store.get_round(round_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(item.get("task_id", ""))
+    if task:
+        _ensure_task_access(request, task)
+    coverage = request.app.state.store.list_coverage(round_id)
+    return _ok(coverage or {"round_id": round_id, "summary": {}, "items": []})
 
 
 @rounds_router.post("/{round_id}/audit/start")

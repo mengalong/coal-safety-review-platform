@@ -1363,3 +1363,31 @@ class DemoStore:
                                     stored.update(item)
                             return deepcopy(item)
         return None
+
+    def list_dynamic_items(self, round_id: str) -> list[dict] | None:
+        _task, round_item = self._find_round(round_id)
+        if not round_item:
+            return None
+        items = []
+        for standard in round_item.get("standards", []):
+            if standard.get("status") != "confirmed":
+                continue
+            version = self.get_standard_version(standard.get("standard_version_id")) or {}
+            for clause in version.get("latest_parse_revision", {}).get("clauses", []):
+                items.append({
+                    "id": f"dynamic-{round_id[:8]}-{clause['id'][:8]}",
+                    "round_id": round_id,
+                    "source_clause": f"{standard.get('standard_code')} {clause.get('clause_code')}",
+                    "source_clause_id": clause.get("id"),
+                    "subject_code": clause.get("clause_code"),
+                    "subject_name": clause.get("title") or clause.get("clause_code"),
+                    "applicability_status": "to_confirm",
+                    "execution_mode": "deterministic",
+                })
+        return items
+
+    def list_coverage(self, round_id: str) -> dict | None:
+        items = self.list_dynamic_items(round_id)
+        if items is None:
+            return None
+        return {"round_id": round_id, "summary": {"to_confirm": len(items)}, "items": items}

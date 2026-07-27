@@ -14,12 +14,14 @@ from coal_platform.models import (
     AuditRun,
     AuditTask,
     AuthSession,
+    DynamicAuditItem,
     ExecutorDefinition,
     ExecutorVersion,
     OperationLog,
     QueueJob,
     RoundRule,
     RoundStandard,
+    RoundStandardCoverage,
     RuleDefinition,
     RulePack,
     RulePackItem,
@@ -1945,6 +1947,46 @@ class SqlAlchemyStore(DemoStore):
             if not round_item or not selected or selected.round_id != round_item.id:
                 return None
             selected.snapshot_no = f"SNAPSHOT-R{round_item.round_no}"
+            clauses = session.scalars(
+                select(StandardClause)
+                .where(StandardClause.parse_revision_id == selected.parse_revision_id)
+                .order_by(StandardClause.clause_code)
+            ).all()
+            for clause in clauses:
+                dynamic_item = session.scalar(
+                    select(DynamicAuditItem).where(
+                        DynamicAuditItem.round_id == round_item.id,
+                        DynamicAuditItem.source_clause_id == clause.id,
+                    )
+                )
+                if not dynamic_item:
+                    dynamic_item = DynamicAuditItem(
+                        round_id=round_item.id,
+                        source_clause_id=clause.id,
+                        subject_code=clause.clause_code,
+                        subject_name=clause.title or clause.clause_code,
+                        applicability_status="to_confirm",
+                        execution_mode="deterministic",
+                        input_profile={"constraint_level": clause.constraint_level},
+                    )
+                    session.add(dynamic_item)
+                    session.flush()
+                coverage = session.scalar(
+                    select(RoundStandardCoverage).where(
+                        RoundStandardCoverage.round_id == round_item.id,
+                        RoundStandardCoverage.standard_clause_id == clause.id,
+                    )
+                )
+                if not coverage:
+                    session.add(
+                        RoundStandardCoverage(
+                            round_id=round_item.id,
+                            standard_clause_id=clause.id,
+                            dynamic_item_id=dynamic_item.id,
+                            coverage_status="to_confirm",
+                            publish_check_status="pending",
+                        )
+                    )
             self._log(
                 session,
                 operator_user_id=payload.get("_operator_user_id"),
@@ -1956,6 +1998,47 @@ class SqlAlchemyStore(DemoStore):
             )
             session.flush()
             return self._round_standard_dict(session, selected)
+
+    def list_dynamic_items(self, round_id: str) -> list[dict[str, Any]] | None:
+        round_uuid = _uuid(round_id)
+        if not round_uuid:
+            return None
+        with self.session_factory() as session:
+            if not session.get(AuditRound, round_uuid):
+                return None
+            items = session.scalars(
+                select(DynamicAuditItem).where(DynamicAuditItem.round_id == round_uuid).order_by(DynamicAuditItem.created_at)
+            ).all()
+            return [
+                {
+                    "id": str(item.id), "round_id": str(item.round_id),
+                    "source_clause_id": str(item.source_clause_id) if item.source_clause_id else None,
+                    "subject_code": item.subject_code, "subject_name": item.subject_name,
+                    "applicability_status": item.applicability_status, "execution_mode": item.execution_mode,
+                    "customer_evidence": item.customer_evidence, "standard_evidence": item.standard_evidence,
+                    "manual_state": item.manual_state,
+                }
+                for item in items
+            ]
+
+    def list_coverage(self, round_id: str) -> dict[str, Any] | None:
+        round_uuid = _uuid(round_id)
+        if not round_uuid:
+            return None
+        with self.session_factory() as session:
+            if not session.get(AuditRound, round_uuid):
+                return None
+            items = session.scalars(
+                select(RoundStandardCoverage).where(RoundStandardCoverage.round_id == round_uuid).order_by(RoundStandardCoverage.created_at)
+            ).all()
+            summary: dict[str, int] = {}
+            for item in items:
+                summary[item.coverage_status] = summary.get(item.coverage_status, 0) + 1
+            return {"round_id": round_id, "summary": summary, "items": [{
+                "id": str(item.id), "standard_clause_id": str(item.standard_clause_id),
+                "dynamic_item_id": str(item.dynamic_item_id) if item.dynamic_item_id else None,
+                "coverage_status": item.coverage_status, "reason": item.reason,
+            } for item in items]}
 
     def list_operation_logs(self) -> list[dict[str, Any]]:
         with self.session_factory() as session:
