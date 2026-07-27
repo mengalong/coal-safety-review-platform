@@ -304,3 +304,60 @@ def test_standard_parse_revision_comparison_and_abolish_workflow() -> None:
         assert abolished.status_code == 200
         assert abolished.json()["data"]["status"] == "obsolete"
         assert abolished.json()["data"]["superseded_by_id"] == new_version["id"]
+
+
+def test_rule_and_executor_catalog_workflow() -> None:
+    with _client() as client:
+        reviewer_headers = _login(client)
+        executors = client.get("/api/v1/executors", headers=reviewer_headers)
+        rules = client.get("/api/v1/rules", headers=reviewer_headers)
+        assert executors.status_code == 200
+        assert rules.status_code == 200
+        assert executors.json()["data"][0]["versions"]
+        assert rules.json()["data"][0]["versions"]
+        executor_code = executors.json()["data"][0]["executor_code"]
+        assert client.get(f"/api/v1/executors/{executor_code}/versions", headers=reviewer_headers).status_code == 200
+        assert client.post(
+            "/api/v1/rules",
+            headers=reviewer_headers,
+            json={
+                "rule_code": "REVIEWER_CANNOT_CREATE",
+                "rule_name": "权限测试规则",
+                "rule_type": "deterministic",
+                "executor_code": executor_code,
+                "default_issue_category": "technical_compliance",
+                "default_severity": "一般",
+            },
+        ).status_code == 403
+
+        admin_headers = _login(client, login_name="admin")
+        created = client.post(
+            "/api/v1/rules",
+            headers=admin_headers,
+            json={
+                "rule_code": "PRODUCT_MODEL_FORMAT",
+                "rule_name": "产品型号格式检查",
+                "rule_type": "deterministic",
+                "executor_code": executor_code,
+                "default_issue_category": "format",
+                "default_severity": "一般",
+                "affects_suggested_conclusion": True,
+            },
+        )
+        assert created.status_code == 201
+        rule = created.json()["data"]
+        version = client.post(
+            f"/api/v1/rules/{rule['id']}/versions",
+            headers=admin_headers,
+            json={"parameters": {"pattern": "^[A-Z]"}, "stage_code": "basic_info"},
+        )
+        assert version.status_code == 201
+        published = client.post(
+            f"/api/v1/rule-versions/{version.json()['data']['id']}/publish",
+            headers=admin_headers,
+        )
+        assert published.status_code == 200
+        assert published.json()["data"]["status"] == "published"
+        detail = client.get(f"/api/v1/rules/{rule['id']}", headers=reviewer_headers)
+        assert detail.status_code == 200
+        assert detail.json()["data"]["status"] == "published"

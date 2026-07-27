@@ -9,9 +9,13 @@ from coal_platform.database import Base
 from coal_platform.main import create_app
 from coal_platform.models import (
     AuditRun,
+    ExecutorDefinition,
+    ExecutorVersion,
     OperationLog,
     QueueJob,
     RoundStandard,
+    RuleDefinition,
+    RuleVersion,
     Standard,
     StandardClause,
     StandardParseRevision,
@@ -215,6 +219,52 @@ def test_database_store_versions_parse_revisions_and_compares_clauses(tmp_path: 
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(StandardParseRevision)) == 7
         assert session.scalar(select(func.count()).select_from(StandardClause)) == 12
+
+
+def test_database_store_persists_executor_and_rule_versions(tmp_path: Path) -> None:
+    store, factory = _store(tmp_path / "rules.db")
+    admin = store.authenticate("admin", DemoStore.demo_password)
+    assert admin
+    executors = store.list_executors()
+    rules = store.list_rules()
+    assert len(executors) == 9
+    assert len(rules) == 4
+    assert executors[0]["versions"]
+    assert rules[0]["versions"]
+
+    created = store.create_rule(
+        {
+            "rule_code": "PRODUCT_MODEL_FORMAT",
+            "rule_name": "产品型号格式检查",
+            "rule_type": "deterministic",
+            "executor_code": executors[0]["executor_code"],
+            "default_issue_category": "format",
+            "default_severity": "一般",
+            "affects_suggested_conclusion": True,
+            "_operator_user_id": admin["id"],
+        }
+    )
+    assert created and created["status"] == "draft"
+    version = store.create_rule_version(
+        created["id"],
+        {
+            "parameters": {"pattern": "^[A-Z]"},
+            "stage_code": "basic_info",
+            "_operator_user_id": admin["id"],
+        },
+    )
+    assert version and version["version_no"] == "v1.0"
+    published = store.publish_rule_version(version["id"], {"_operator_user_id": admin["id"]})
+    assert published and published["status"] == "published"
+    reloaded = store.get_rule(created["id"])
+    assert reloaded and reloaded["status"] == "published"
+    assert reloaded["versions"][0]["executor_code"] == executors[0]["executor_code"]
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(ExecutorDefinition)) == 9
+        assert session.scalar(select(func.count()).select_from(ExecutorVersion)) == 9
+        assert session.scalar(select(func.count()).select_from(RuleDefinition)) == 5
+        assert session.scalar(select(func.count()).select_from(RuleVersion)) == 5
 
 
 def test_database_store_persists_and_revokes_auth_session(tmp_path: Path) -> None:

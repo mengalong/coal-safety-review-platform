@@ -49,6 +49,7 @@ standard_parse_revisions_router = APIRouter(
     prefix="/standard-parse-revisions", tags=["standard-parse-revisions"], dependencies=[Depends(require_user)]
 )
 rules_router = APIRouter(prefix="/rules", tags=["rules"], dependencies=[Depends(require_user)])
+rule_versions_router = APIRouter(prefix="/rule-versions", tags=["rule-versions"], dependencies=[Depends(require_user)])
 executors_router = APIRouter(prefix="/executors", tags=["executors"], dependencies=[Depends(require_user)])
 issues_router = APIRouter(prefix="/issues", tags=["issues"], dependencies=[Depends(require_user)])
 reports_router = APIRouter(prefix="/reports", tags=["reports"], dependencies=[Depends(require_user)])
@@ -483,45 +484,69 @@ def list_rules(request: Request) -> dict:
 
 
 @rules_router.post("", dependencies=[Depends(require_admin)])
-def create_rule(payload: RuleCreateRequest) -> dict:
-    return _ok(
-        {
-            "id": "temp",
-            "rule_code": payload.rule_code,
-            "rule_name": payload.rule_name,
-            "rule_type": payload.rule_type,
-            "executor_code": payload.executor_code,
-            "status": "draft",
-        },
-        "rule created",
-    )
+def create_rule(payload: RuleCreateRequest, request: Request) -> JSONResponse:
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    rule = request.app.state.store.create_rule(data)
+    if not rule:
+        raise HTTPException(status_code=409, detail="rule code or executor already exists")
+    return JSONResponse(status_code=201, content=_ok(rule, "rule created"))
+
+
+@rules_router.get("/{rule_id}")
+def get_rule(rule_id: str, request: Request) -> dict:
+    rule = request.app.state.store.get_rule(rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="rule not found")
+    return _ok(rule)
 
 
 @rules_router.post("/{rule_id}/versions", dependencies=[Depends(require_admin)])
-def create_rule_version(rule_id: str, payload: RuleVersionCreateRequest) -> dict:
-    return _ok(
-        {
-            "rule_id": rule_id,
-            "parameters": payload.parameters,
-            "scope_files": payload.scope_files,
-            "priority": payload.priority,
-            "stage_code": payload.stage_code,
-            "dependency_rule_codes": payload.dependency_rule_codes,
-            "task_override_allowed": payload.task_override_allowed,
-            "status": "draft",
-        },
-        "rule version created",
-    )
+def create_rule_version(rule_id: str, payload: RuleVersionCreateRequest, request: Request) -> JSONResponse:
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    version = request.app.state.store.create_rule_version(rule_id, data)
+    if not version:
+        raise HTTPException(status_code=404, detail="rule or executor version not found")
+    return JSONResponse(status_code=201, content=_ok(version, "rule version created"))
 
 
+@rules_router.get("/{rule_id}/versions")
+def list_rule_versions(rule_id: str, request: Request) -> dict:
+    versions = request.app.state.store.list_rule_versions(rule_id)
+    if versions is None:
+        raise HTTPException(status_code=404, detail="rule not found")
+    return _ok(versions)
+
+
+@rule_versions_router.get("/{rule_version_id}")
+def get_rule_version(rule_version_id: str, request: Request) -> dict:
+    version = request.app.state.store.get_rule_version(rule_version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="rule version not found")
+    return _ok(version)
+
+
+@rule_versions_router.post("/{rule_version_id}/publish", dependencies=[Depends(require_admin)])
 @rules_router.post("/{rule_version_id}/publish", dependencies=[Depends(require_admin)])
-def publish_rule(rule_version_id: str) -> dict:
-    return _ok({"rule_version_id": rule_version_id, "status": "published"})
+def publish_rule(rule_version_id: str, request: Request) -> dict:
+    version = request.app.state.store.publish_rule_version(rule_version_id, _operation_context(request))
+    if not version:
+        raise HTTPException(status_code=404, detail="rule version not found")
+    return _ok(version, "rule version published")
 
 
 @executors_router.get("")
 def list_executors(request: Request) -> dict:
     return _ok(request.app.state.store.list_executors())
+
+
+@executors_router.get("/{executor_code}/versions")
+def list_executor_versions(executor_code: str, request: Request) -> dict:
+    versions = request.app.state.store.list_executor_versions(executor_code)
+    if versions is None:
+        raise HTTPException(status_code=404, detail="executor not found")
+    return _ok(versions)
 
 
 @executors_router.get("/{executor_code}")
@@ -632,6 +657,7 @@ def register_routers(app: FastAPI, prefix: str = "/api/v1") -> None:
     app.include_router(standard_versions_router, prefix=prefix)
     app.include_router(standard_parse_revisions_router, prefix=prefix)
     app.include_router(rules_router, prefix=prefix)
+    app.include_router(rule_versions_router, prefix=prefix)
     app.include_router(executors_router, prefix=prefix)
     app.include_router(issues_router, prefix=prefix)
     app.include_router(reports_router, prefix=prefix)

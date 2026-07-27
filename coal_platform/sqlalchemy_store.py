@@ -14,9 +14,13 @@ from coal_platform.models import (
     AuditRun,
     AuditTask,
     AuthSession,
+    ExecutorDefinition,
+    ExecutorVersion,
     OperationLog,
     QueueJob,
     RoundStandard,
+    RuleDefinition,
+    RuleVersion,
     Standard,
     StandardClause,
     StandardParseRevision,
@@ -24,7 +28,7 @@ from coal_platform.models import (
     TaskFile,
     User,
 )
-from coal_platform.store import DemoStore, compare_clause_sets
+from coal_platform.store import DemoStore, compare_clause_sets, next_version_no
 
 
 def _uuid(value: str | UUID | None) -> UUID | None:
@@ -61,6 +65,7 @@ class SqlAlchemyStore(DemoStore):
         with self.session_factory() as session, session.begin():
             if session.scalar(select(func.count()).select_from(User)):
                 self._seed_standard_catalog(session)
+                self._seed_rule_catalog(session)
                 return
 
             reviewer = User(
@@ -139,6 +144,7 @@ class SqlAlchemyStore(DemoStore):
                 session.flush()
                 task.current_round_id = round_item.id
             self._seed_standard_catalog(session)
+            self._seed_rule_catalog(session)
 
     @staticmethod
     def _seed_standard_catalog(session: Session) -> None:
@@ -202,6 +208,77 @@ class SqlAlchemyStore(DemoStore):
                     )
                 )
 
+    def _seed_rule_catalog(self, session: Session) -> None:
+        if not session.scalar(select(ExecutorDefinition.id).limit(1)):
+            for item in self.executors.values():
+                definition = ExecutorDefinition(
+                    executor_code=item["executor_code"],
+                    executor_name=item["executor_name"],
+                    executor_kind=item["executor_kind"],
+                    input_type=item["input_type"],
+                    output_type=item["output_type"],
+                    runtime_mode="worker",
+                    status="published" if item["status"] == "published" else item["status"],
+                )
+                session.add(definition)
+                session.flush()
+                version = ExecutorVersion(
+                    executor_definition_id=definition.id,
+                    version_no=item["version_no"],
+                    parameter_schema={"type": "object", "description": item.get("parameter_note", "")},
+                    result_schema={"type": "object"},
+                    default_timeout_seconds=item.get("default_timeout_seconds", 60),
+                    supports_batch=item.get("supports_batch", False),
+                    entrypoint=item.get("entrypoint"),
+                    image_version="worker-demo",
+                    status="published",
+                )
+                session.add(version)
+                session.flush()
+
+        if session.scalar(select(RuleDefinition.id).limit(1)):
+            return
+        executor_definitions = {
+            item.executor_code: item for item in session.scalars(select(ExecutorDefinition))
+        }
+        executor_versions = {
+            item.executor_definition_id: item
+            for item in session.scalars(
+                select(ExecutorVersion).where(ExecutorVersion.status == "published")
+            )
+        }
+        for item in self.rules.values():
+            executor_definition = executor_definitions.get(item["executor_code"])
+            executor_version = executor_versions.get(executor_definition.id) if executor_definition else None
+            if not executor_definition or not executor_version:
+                continue
+            definition = RuleDefinition(
+                rule_code=item["rule_code"],
+                rule_name=item["rule_name"],
+                rule_type=item["rule_type"],
+                executor_definition_id=executor_definition.id,
+                default_issue_category=item.get("default_issue_category", "technical_compliance"),
+                default_severity=item.get("default_severity", item.get("severity", "一般")),
+                affects_suggested_conclusion=item.get("affects_suggested_conclusion", False),
+                is_mandatory=item.get("is_mandatory", False),
+            )
+            session.add(definition)
+            session.flush()
+            session.add(
+                RuleVersion(
+                    rule_definition_id=definition.id,
+                    version_no=item.get("version_no", "v1.0"),
+                    executor_version_id=executor_version.id,
+                    parameters={},
+                    scope_files=[],
+                    priority=100,
+                    stage_code="standard_compliance",
+                    dependency_rule_codes=[],
+                    task_override_allowed=True,
+                    status="published",
+                )
+            )
+
     @staticmethod
     def _user_dict(user: User) -> dict[str, Any]:
         return {
@@ -256,6 +333,92 @@ class SqlAlchemyStore(DemoStore):
             "status": file_item.status,
             "created_at": _iso(file_item.created_at),
             "updated_at": _iso(file_item.updated_at),
+        }
+
+    @staticmethod
+    def _executor_version_dict(session: Session, version: ExecutorVersion) -> dict[str, Any]:
+        definition = session.get(ExecutorDefinition, version.executor_definition_id)
+        return {
+            "id": str(version.id),
+            "executor_definition_id": str(version.executor_definition_id),
+            "executor_code": definition.executor_code if definition else None,
+            "version_no": version.version_no,
+            "parameter_schema": version.parameter_schema,
+            "result_schema": version.result_schema,
+            "default_timeout_seconds": version.default_timeout_seconds,
+            "supports_batch": version.supports_batch,
+            "entrypoint": version.entrypoint,
+            "image_version": version.image_version,
+            "status": version.status,
+        }
+
+    def _executor_dict(self, session: Session, definition: ExecutorDefinition) -> dict[str, Any]:
+        versions = session.scalars(
+            select(ExecutorVersion)
+            .where(ExecutorVersion.executor_definition_id == definition.id)
+            .order_by(ExecutorVersion.created_at.desc())
+        ).all()
+        latest = versions[0] if versions else None
+        return {
+            "id": str(definition.id),
+            "executor_code": definition.executor_code,
+            "executor_name": definition.executor_name,
+            "executor_kind": definition.executor_kind,
+            "input_type": definition.input_type,
+            "output_type": definition.output_type,
+            "runtime_mode": definition.runtime_mode,
+            "status": definition.status,
+            "version_no": latest.version_no if latest else None,
+            "default_timeout_seconds": latest.default_timeout_seconds if latest else None,
+            "supports_batch": latest.supports_batch if latest else None,
+            "entrypoint": latest.entrypoint if latest else None,
+            "versions": [self._executor_version_dict(session, version) for version in versions],
+        }
+
+    def _rule_version_dict(self, session: Session, version: RuleVersion) -> dict[str, Any]:
+        rule = session.get(RuleDefinition, version.rule_definition_id)
+        executor_version = session.get(ExecutorVersion, version.executor_version_id)
+        executor = session.get(ExecutorDefinition, executor_version.executor_definition_id) if executor_version else None
+        return {
+            "id": str(version.id),
+            "rule_definition_id": str(version.rule_definition_id),
+            "rule_code": rule.rule_code if rule else None,
+            "rule_name": rule.rule_name if rule else None,
+            "version_no": version.version_no,
+            "executor_version_id": str(version.executor_version_id),
+            "executor_code": executor.executor_code if executor else None,
+            "parameters": version.parameters,
+            "scope_files": version.scope_files,
+            "priority": version.priority,
+            "stage_code": version.stage_code,
+            "dependency_rule_codes": version.dependency_rule_codes or [],
+            "task_override_allowed": version.task_override_allowed,
+            "status": version.status,
+        }
+
+    def _rule_dict(self, session: Session, definition: RuleDefinition) -> dict[str, Any]:
+        versions = session.scalars(
+            select(RuleVersion)
+            .where(RuleVersion.rule_definition_id == definition.id)
+            .order_by(RuleVersion.created_at.desc())
+        ).all()
+        executor = session.get(ExecutorDefinition, definition.executor_definition_id)
+        latest = versions[0] if versions else None
+        return {
+            "id": str(definition.id),
+            "rule_code": definition.rule_code,
+            "rule_name": definition.rule_name,
+            "rule_type": definition.rule_type,
+            "executor_definition_id": str(definition.executor_definition_id),
+            "executor_code": executor.executor_code if executor else None,
+            "default_issue_category": definition.default_issue_category,
+            "default_severity": definition.default_severity,
+            "severity": definition.default_severity,
+            "affects_suggested_conclusion": definition.affects_suggested_conclusion,
+            "is_mandatory": definition.is_mandatory,
+            "version_no": latest.version_no if latest else None,
+            "status": latest.status if latest else "draft",
+            "versions": [self._rule_version_dict(session, version) for version in versions],
         }
 
     @staticmethod
@@ -499,6 +662,180 @@ class SqlAlchemyStore(DemoStore):
         with self.session_factory() as session:
             task = session.get(AuditTask, task_uuid)
             return self._task_dict(session, task) if task else None
+
+    def list_executors(self) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            definitions = session.scalars(select(ExecutorDefinition).order_by(ExecutorDefinition.executor_code)).all()
+            return [self._executor_dict(session, item) for item in definitions]
+
+    def list_executor_versions(self, executor_code: str) -> list[dict[str, Any]] | None:
+        with self.session_factory() as session:
+            definition = session.scalar(
+                select(ExecutorDefinition).where(ExecutorDefinition.executor_code == executor_code)
+            )
+            if not definition:
+                return None
+            versions = session.scalars(
+                select(ExecutorVersion)
+                .where(ExecutorVersion.executor_definition_id == definition.id)
+                .order_by(ExecutorVersion.created_at.desc())
+            ).all()
+            return [self._executor_version_dict(session, item) for item in versions]
+
+    def list_rules(self) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            definitions = session.scalars(select(RuleDefinition).order_by(RuleDefinition.rule_code)).all()
+            return [self._rule_dict(session, item) for item in definitions]
+
+    def get_rule(self, rule_id: str) -> dict[str, Any] | None:
+        rule_uuid = _uuid(rule_id)
+        if not rule_uuid:
+            return None
+        with self.session_factory() as session:
+            definition = session.get(RuleDefinition, rule_uuid)
+            return self._rule_dict(session, definition) if definition else None
+
+    def create_rule(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        with self.session_factory() as session, session.begin():
+            if session.scalar(select(RuleDefinition.id).where(RuleDefinition.rule_code == payload["rule_code"])):
+                return None
+            executor = session.scalar(
+                select(ExecutorDefinition).where(ExecutorDefinition.executor_code == payload["executor_code"])
+            )
+            if not executor:
+                return None
+            definition = RuleDefinition(
+                rule_code=payload["rule_code"],
+                rule_name=payload["rule_name"],
+                rule_type=payload["rule_type"],
+                executor_definition_id=executor.id,
+                default_issue_category=payload["default_issue_category"],
+                default_severity=payload["default_severity"],
+                affects_suggested_conclusion=payload.get("affects_suggested_conclusion", False),
+                is_mandatory=payload.get("is_mandatory", False),
+            )
+            session.add(definition)
+            session.flush()
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="rule_definition",
+                entity_id=definition.id,
+                action_code="rule.create",
+                after_snapshot={"rule_code": definition.rule_code},
+                trace_id=payload.get("_trace_id"),
+            )
+            return self._rule_dict(session, definition)
+
+    def list_rule_versions(self, rule_id: str) -> list[dict[str, Any]] | None:
+        rule_uuid = _uuid(rule_id)
+        if not rule_uuid:
+            return None
+        with self.session_factory() as session:
+            if not session.get(RuleDefinition, rule_uuid):
+                return None
+            versions = session.scalars(
+                select(RuleVersion)
+                .where(RuleVersion.rule_definition_id == rule_uuid)
+                .order_by(RuleVersion.created_at.desc())
+            ).all()
+            return [self._rule_version_dict(session, item) for item in versions]
+
+    def get_rule_version(self, version_id: str) -> dict[str, Any] | None:
+        version_uuid = _uuid(version_id)
+        if not version_uuid:
+            return None
+        with self.session_factory() as session:
+            version = session.get(RuleVersion, version_uuid)
+            return self._rule_version_dict(session, version) if version else None
+
+    def create_rule_version(self, rule_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        rule_uuid = _uuid(rule_id)
+        if not rule_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            definition = session.get(RuleDefinition, rule_uuid)
+            if not definition:
+                return None
+            executor_version = None
+            if payload.get("executor_version_id"):
+                executor_version = session.get(ExecutorVersion, _uuid(payload["executor_version_id"]))
+                if not executor_version or executor_version.executor_definition_id != definition.executor_definition_id:
+                    return None
+            else:
+                executor_version = session.scalar(
+                    select(ExecutorVersion)
+                    .where(
+                        ExecutorVersion.executor_definition_id == definition.executor_definition_id,
+                        ExecutorVersion.status == "published",
+                    )
+                    .order_by(ExecutorVersion.created_at.desc())
+                    .limit(1)
+                )
+            if not executor_version or executor_version.status != "published":
+                return None
+            existing_numbers = session.scalars(
+                select(RuleVersion.version_no).where(RuleVersion.rule_definition_id == definition.id)
+            ).all()
+            version_no = payload.get("version_no") or next_version_no(existing_numbers)
+            if version_no in existing_numbers:
+                return None
+            version = RuleVersion(
+                rule_definition_id=definition.id,
+                version_no=version_no,
+                executor_version_id=executor_version.id,
+                parameters=payload.get("parameters") or {},
+                scope_files=payload.get("scope_files") or [],
+                priority=payload.get("priority", 100),
+                stage_code=payload.get("stage_code", "standard_compliance"),
+                dependency_rule_codes=payload.get("dependency_rule_codes") or [],
+                task_override_allowed=payload.get("task_override_allowed", True),
+                status="draft",
+            )
+            session.add(version)
+            session.flush()
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="rule_version",
+                entity_id=version.id,
+                action_code="rule_version.create",
+                after_snapshot={"version_no": version.version_no, "rule_id": str(definition.id)},
+                trace_id=payload.get("_trace_id"),
+            )
+            return self._rule_version_dict(session, version)
+
+    def publish_rule_version(self, version_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        version_uuid = _uuid(version_id)
+        if not version_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            version = session.get(RuleVersion, version_uuid)
+            if not version:
+                return None
+            executor_version = session.get(ExecutorVersion, version.executor_version_id)
+            if not executor_version or executor_version.status != "published":
+                return None
+            for previous in session.scalars(
+                select(RuleVersion).where(
+                    RuleVersion.rule_definition_id == version.rule_definition_id,
+                    RuleVersion.status == "published",
+                    RuleVersion.id != version.id,
+                )
+            ):
+                previous.status = "archived"
+            version.status = "published"
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="rule_version",
+                entity_id=version.id,
+                action_code="rule_version.publish",
+                after_snapshot={"status": "published"},
+                trace_id=payload.get("_trace_id"),
+            )
+            session.flush()
+            return self._rule_version_dict(session, version)
 
     def list_standards(self) -> list[dict[str, Any]]:
         with self.session_factory() as session:

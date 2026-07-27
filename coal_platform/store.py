@@ -63,6 +63,16 @@ def _clause_payload(payload: dict) -> dict:
     }
 
 
+def next_version_no(version_numbers: list[str]) -> str:
+    if not version_numbers:
+        return "v1.0"
+    latest = version_numbers[-1].removeprefix("v")
+    parts = latest.split(".")
+    if len(parts) == 2 and all(part.isdigit() for part in parts):
+        return f"v{parts[0]}.{int(parts[1]) + 1}"
+    return f"v{len(version_numbers) + 1}.0"
+
+
 class DemoStore:
     demo_password = "coal123456"
 
@@ -293,8 +303,21 @@ class DemoStore:
         return user_id
 
     def _executor(self, code: str, name: str, kind: str, version: str, status: str, parameter_note: str) -> dict:
-        return {
+        definition_id = str(uuid4())
+        executor_version = {
             "id": str(uuid4()),
+            "executor_definition_id": definition_id,
+            "version_no": version,
+            "parameter_schema": {"type": "object", "description": parameter_note},
+            "result_schema": {"type": "object"},
+            "default_timeout_seconds": 60,
+            "supports_batch": False,
+            "entrypoint": f"coal_platform.executors.{code}:execute",
+            "image_version": "worker-demo",
+            "status": status,
+        }
+        return {
+            "id": definition_id,
             "executor_code": code,
             "executor_name": name,
             "executor_kind": kind,
@@ -306,6 +329,7 @@ class DemoStore:
             "supports_batch": False,
             "entrypoint": f"coal_platform.executors.{code}:execute",
             "parameter_note": parameter_note,
+            "versions": [executor_version],
         }
 
     def _standard(self, code: str, name: str, standard_type: str, status: str) -> dict:
@@ -344,17 +368,37 @@ class DemoStore:
         }
 
     def _rule(self, code: str, name: str, executor_code: str, severity: str) -> dict:
-        return {
+        rule_id = str(uuid4())
+        executor = self.executors[executor_code]
+        version = {
             "id": str(uuid4()),
+            "rule_definition_id": rule_id,
+            "version_no": "v1.3",
+            "executor_version_id": executor["versions"][0]["id"],
+            "executor_code": executor_code,
+            "parameters": {},
+            "scope_files": [],
+            "priority": 100,
+            "stage_code": "standard_compliance",
+            "dependency_rule_codes": [],
+            "task_override_allowed": True,
+            "status": "published",
+        }
+        return {
+            "id": rule_id,
             "rule_code": code,
             "rule_name": name,
             "rule_type": "deterministic",
+            "executor_definition_id": executor["id"],
             "executor_code": executor_code,
+            "default_issue_category": "technical_compliance",
+            "default_severity": severity,
             "version_no": "v1.3",
             "status": "published",
             "severity": severity,
             "is_mandatory": False,
             "affects_suggested_conclusion": True,
+            "versions": [version],
         }
 
     def _task(
@@ -762,8 +806,114 @@ class DemoStore:
     def list_rules(self) -> list[dict]:
         return [deepcopy(item) for item in self.rules.values()]
 
+    def get_rule(self, rule_id: str) -> dict | None:
+        _key, rule = self._find_record(self.rules, rule_id)
+        return deepcopy(rule) if rule else None
+
+    def create_rule(self, payload: dict) -> dict | None:
+        with self._lock:
+            if any(item.get("rule_code") == payload["rule_code"] for item in self.rules.values()):
+                return None
+            executor = next(
+                (item for item in self.executors.values() if item.get("executor_code") == payload["executor_code"]),
+                None,
+            )
+            if not executor:
+                return None
+            rule_id = str(uuid4())
+            self.rules[rule_id] = {
+                "id": rule_id,
+                "rule_code": payload["rule_code"],
+                "rule_name": payload["rule_name"],
+                "rule_type": payload["rule_type"],
+                "executor_definition_id": executor["id"],
+                "executor_code": executor["executor_code"],
+                "default_issue_category": payload["default_issue_category"],
+                "default_severity": payload["default_severity"],
+                "severity": payload["default_severity"],
+                "affects_suggested_conclusion": payload.get("affects_suggested_conclusion", False),
+                "is_mandatory": payload.get("is_mandatory", False),
+                "status": "draft",
+                "versions": [],
+            }
+            return deepcopy(self.rules[rule_id])
+
+    def list_rule_versions(self, rule_id: str) -> list[dict] | None:
+        rule = self.get_rule(rule_id)
+        return rule.get("versions", []) if rule else None
+
+    def get_rule_version(self, version_id: str) -> dict | None:
+        for rule in self.rules.values():
+            for version in rule.get("versions", []):
+                if version.get("id") == version_id:
+                    item = deepcopy(version)
+                    item["rule_code"] = rule["rule_code"]
+                    item["rule_name"] = rule["rule_name"]
+                    item["executor_code"] = rule["executor_code"]
+                    return item
+        return None
+
+    def create_rule_version(self, rule_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            _key, rule = self._find_record(self.rules, rule_id)
+            if not rule:
+                return None
+            executor = self.executors.get(rule["executor_code"])
+            if not executor:
+                return None
+            executor_version_id = payload.get("executor_version_id")
+            executor_version = next(
+                (item for item in executor.get("versions", []) if item.get("id") == executor_version_id),
+                None,
+            ) if executor_version_id else next(
+                (item for item in reversed(executor.get("versions", [])) if item.get("status") == "published"),
+                None,
+            )
+            if not executor_version:
+                return None
+            version_no = payload.get("version_no") or next_version_no(
+                [item["version_no"] for item in rule.get("versions", [])]
+            )
+            if any(item.get("version_no") == version_no for item in rule.get("versions", [])):
+                return None
+            version = {
+                "id": str(uuid4()),
+                "rule_definition_id": rule["id"],
+                "version_no": version_no,
+                "executor_version_id": executor_version["id"],
+                "executor_code": rule["executor_code"],
+                "parameters": payload.get("parameters") or {},
+                "scope_files": payload.get("scope_files") or [],
+                "priority": payload.get("priority", 100),
+                "stage_code": payload.get("stage_code", "standard_compliance"),
+                "dependency_rule_codes": payload.get("dependency_rule_codes") or [],
+                "task_override_allowed": payload.get("task_override_allowed", True),
+                "status": "draft",
+            }
+            rule.setdefault("versions", []).append(version)
+            return deepcopy(version)
+
+    def publish_rule_version(self, version_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            for rule in self.rules.values():
+                for version in rule.get("versions", []):
+                    if version.get("id") != version_id:
+                        continue
+                    for previous in rule["versions"]:
+                        if previous is not version and previous.get("status") == "published":
+                            previous["status"] = "archived"
+                    version["status"] = "published"
+                    rule["status"] = "published"
+                    rule["version_no"] = version["version_no"]
+                    return deepcopy(version)
+        return None
+
     def list_executors(self) -> list[dict]:
         return [deepcopy(item) for item in self.executors.values()]
+
+    def list_executor_versions(self, executor_code: str) -> list[dict] | None:
+        executor = self.executors.get(executor_code)
+        return deepcopy(executor.get("versions", [])) if executor else None
 
     def list_reports(self) -> list[dict]:
         return [deepcopy(item) for item in self.reports.values()]

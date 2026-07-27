@@ -92,6 +92,7 @@ class RuleCreateRequest(BaseModel):
 
 
 class RuleVersionCreateRequest(BaseModel):
+    version_no: str | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     scope_files: list[str] = Field(default_factory=list)
     priority: int = 100
