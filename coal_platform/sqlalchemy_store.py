@@ -24,7 +24,7 @@ from coal_platform.models import (
     TaskFile,
     User,
 )
-from coal_platform.store import DemoStore
+from coal_platform.store import DemoStore, compare_clause_sets
 
 
 def _uuid(value: str | UUID | None) -> UUID | None:
@@ -280,7 +280,9 @@ class SqlAlchemyStore(DemoStore):
             return None
         item = {
             "id": str(revision.id),
+            "standard_version_id": str(revision.standard_version_id),
             "revision_no": revision.revision_no,
+            "revision_payload": revision.revision_payload,
             "impact_flag": revision.impact_flag,
             "status": revision.status,
             "published_at": _iso(revision.published_at),
@@ -300,7 +302,7 @@ class SqlAlchemyStore(DemoStore):
         revision = session.scalar(
             select(StandardParseRevision)
             .where(StandardParseRevision.standard_version_id == version.id)
-            .order_by(StandardParseRevision.created_at.desc())
+            .order_by(StandardParseRevision.created_at.desc(), StandardParseRevision.revision_no.desc())
             .limit(1)
         )
         return {
@@ -316,6 +318,7 @@ class SqlAlchemyStore(DemoStore):
             "publisher": version.publisher,
             "mandatory_flag": version.mandatory_flag,
             "status": version.status,
+            "superseded_by_id": str(version.superseded_by_id) if version.superseded_by_id else None,
             "latest_parse_revision": self._parse_revision_dict(session, revision, include_clauses),
         }
 
@@ -600,6 +603,126 @@ class SqlAlchemyStore(DemoStore):
             session.flush()
             return self._standard_version_dict(session, version)
 
+    def list_standard_parse_revisions(self, version_id: str) -> list[dict[str, Any]] | None:
+        version_uuid = _uuid(version_id)
+        if not version_uuid:
+            return None
+        with self.session_factory() as session:
+            if not session.get(StandardVersion, version_uuid):
+                return None
+            revisions = session.scalars(
+                select(StandardParseRevision)
+                .where(StandardParseRevision.standard_version_id == version_uuid)
+                .order_by(StandardParseRevision.revision_no)
+            ).all()
+            return [self._parse_revision_dict(session, revision, include_clauses=True) for revision in revisions]
+
+    def create_standard_parse_revision(self, version_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        version_uuid = _uuid(version_id)
+        if not version_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            version = session.get(StandardVersion, version_uuid)
+            if not version:
+                return None
+            revisions = session.scalars(
+                select(StandardParseRevision)
+                .where(StandardParseRevision.standard_version_id == version.id)
+                .order_by(StandardParseRevision.created_at, StandardParseRevision.revision_no)
+            ).all()
+            revision_numbers = [
+                int(item.revision_no[1:])
+                for item in revisions
+                if item.revision_no.startswith("P") and item.revision_no[1:].isdigit()
+            ]
+            source_revision = revisions[-1] if revisions else None
+            clause_payloads = payload.get("clauses")
+            if clause_payloads is None and source_revision:
+                source_clauses = session.scalars(
+                    select(StandardClause)
+                    .where(StandardClause.parse_revision_id == source_revision.id)
+                    .order_by(StandardClause.clause_code)
+                ).all()
+                clause_payloads = [self._clause_dict(item) for item in source_clauses]
+            clause_payloads = clause_payloads or []
+            revision = StandardParseRevision(
+                standard_version_id=version.id,
+                revision_no=f"P{max(revision_numbers, default=0) + 1}",
+                revision_payload={
+                    "source": "manual",
+                    "source_revision_id": str(source_revision.id) if source_revision else None,
+                    "clause_count": len(clause_payloads),
+                },
+                impact_flag=payload.get("impact_flag", "no_impact"),
+                status="draft",
+            )
+            session.add(revision)
+            session.flush()
+            for item in clause_payloads:
+                session.add(
+                    StandardClause(
+                        parse_revision_id=revision.id,
+                        clause_code=item["clause_code"],
+                        title=item.get("title"),
+                        clause_level=item.get("clause_level", 1),
+                        clause_type=item.get("clause_type", "requirement"),
+                        constraint_level=item.get("constraint_level", "待确认"),
+                        original_text=item.get("original_text", ""),
+                        parameter_schema=item.get("parameter_schema") or {},
+                        page_no=item.get("page_no"),
+                        bbox=item.get("bbox"),
+                        confidence=item.get("confidence", 0.0),
+                        proof_status=item.get("proof_status", "pending"),
+                    )
+                )
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="standard_parse_revision",
+                entity_id=revision.id,
+                action_code="standard_parse_revision.create",
+                after_snapshot={"revision_no": revision.revision_no, "impact_flag": revision.impact_flag},
+                trace_id=payload.get("_trace_id"),
+            )
+            session.flush()
+            return self._parse_revision_dict(session, revision, include_clauses=True)
+
+    def publish_standard_parse_revision(self, revision_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        revision_uuid = _uuid(revision_id)
+        if not revision_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            revision = session.get(StandardParseRevision, revision_uuid)
+            if not revision:
+                return None
+            for published in session.scalars(
+                select(StandardParseRevision).where(
+                    StandardParseRevision.standard_version_id == revision.standard_version_id,
+                    StandardParseRevision.status == "published",
+                    StandardParseRevision.id != revision.id,
+                )
+            ):
+                published.status = "archived"
+            revision.status = "published"
+            revision.published_at = datetime.now(UTC)
+            version = session.get(StandardVersion, revision.standard_version_id)
+            if version:
+                version.status = "active"
+                standard = session.get(Standard, version.standard_id)
+                if standard:
+                    standard.status = "active"
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="standard_parse_revision",
+                entity_id=revision.id,
+                action_code="standard_parse_revision.publish",
+                after_snapshot={"status": "published"},
+                trace_id=payload.get("_trace_id"),
+            )
+            session.flush()
+            return self._parse_revision_dict(session, revision, include_clauses=True)
+
     def publish_standard_version(self, version_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         version_uuid = _uuid(version_id)
         if not version_uuid:
@@ -615,10 +738,18 @@ class SqlAlchemyStore(DemoStore):
             revision = session.scalar(
                 select(StandardParseRevision)
                 .where(StandardParseRevision.standard_version_id == version.id)
-                .order_by(StandardParseRevision.created_at.desc())
+                .order_by(StandardParseRevision.created_at.desc(), StandardParseRevision.revision_no.desc())
                 .limit(1)
             )
             if revision:
+                for published in session.scalars(
+                    select(StandardParseRevision).where(
+                        StandardParseRevision.standard_version_id == version.id,
+                        StandardParseRevision.status == "published",
+                        StandardParseRevision.id != revision.id,
+                    )
+                ):
+                    published.status = "archived"
                 revision.status = "published"
                 revision.published_at = datetime.now(UTC)
             self._log(
@@ -633,6 +764,88 @@ class SqlAlchemyStore(DemoStore):
             session.flush()
             return self._standard_version_dict(session, version)
 
+    def abolish_standard_version(self, version_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        version_uuid = _uuid(version_id)
+        if not version_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            version = session.get(StandardVersion, version_uuid)
+            if not version:
+                return None
+            successor_uuid = _uuid(payload.get("superseded_by_version_id"))
+            successor = session.get(StandardVersion, successor_uuid) if successor_uuid else None
+            if successor_uuid and (not successor or successor.standard_id != version.standard_id):
+                return None
+            before_status = version.status
+            version.status = "obsolete"
+            version.abolish_date = payload.get("abolish_date") or datetime.now(UTC).date()
+            version.superseded_by_id = successor.id if successor else None
+            standard = session.get(Standard, version.standard_id)
+            if standard:
+                active_version = session.scalar(
+                    select(StandardVersion.id).where(
+                        StandardVersion.standard_id == standard.id,
+                        StandardVersion.status == "active",
+                        StandardVersion.id != version.id,
+                    )
+                )
+                standard.status = "active" if active_version else "obsolete"
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="standard_version",
+                entity_id=version.id,
+                action_code="standard_version.abolish",
+                before_snapshot={"status": before_status},
+                after_snapshot={
+                    "status": version.status,
+                    "abolish_date": version.abolish_date.isoformat(),
+                    "superseded_by_id": str(version.superseded_by_id) if version.superseded_by_id else None,
+                },
+                trace_id=payload.get("_trace_id"),
+            )
+            session.flush()
+            return self._standard_version_dict(session, version)
+
+    def compare_standard_versions(self, version_id: str, other_version_id: str) -> dict[str, Any] | None:
+        version_uuid = _uuid(version_id)
+        other_uuid = _uuid(other_version_id)
+        if not version_uuid or not other_uuid:
+            return None
+        with self.session_factory() as session:
+            left = session.get(StandardVersion, version_uuid)
+            right = session.get(StandardVersion, other_uuid)
+            if not left or not right:
+                return None
+            revisions = []
+            for version in (left, right):
+                revision = session.scalar(
+                    select(StandardParseRevision)
+                    .where(StandardParseRevision.standard_version_id == version.id)
+                    .order_by(StandardParseRevision.created_at.desc(), StandardParseRevision.revision_no.desc())
+                    .limit(1)
+                )
+                revisions.append(revision)
+            clause_sets = []
+            for revision in revisions:
+                clause_sets.append(
+                    [
+                        self._clause_dict(item)
+                        for item in session.scalars(
+                            select(StandardClause)
+                            .where(StandardClause.parse_revision_id == revision.id)
+                            .order_by(StandardClause.clause_code)
+                        )
+                    ]
+                    if revision
+                    else []
+                )
+            return {
+                "left_version": {"id": str(left.id), "full_code": left.full_code},
+                "right_version": {"id": str(right.id), "full_code": right.full_code},
+                **compare_clause_sets(clause_sets[0], clause_sets[1]),
+            }
+
     def list_standard_clauses(self, version_id: str) -> list[dict[str, Any]] | None:
         version_uuid = _uuid(version_id)
         if not version_uuid:
@@ -643,7 +856,7 @@ class SqlAlchemyStore(DemoStore):
             revision = session.scalar(
                 select(StandardParseRevision)
                 .where(StandardParseRevision.standard_version_id == version_uuid)
-                .order_by(StandardParseRevision.created_at.desc())
+                .order_by(StandardParseRevision.created_at.desc(), StandardParseRevision.revision_no.desc())
                 .limit(1)
             )
             if not revision:
@@ -902,7 +1115,7 @@ class SqlAlchemyStore(DemoStore):
             revision = session.scalar(
                 select(StandardParseRevision)
                 .where(StandardParseRevision.standard_version_id == version.id, StandardParseRevision.status == "published")
-                .order_by(StandardParseRevision.created_at.desc())
+                .order_by(StandardParseRevision.created_at.desc(), StandardParseRevision.revision_no.desc())
                 .limit(1)
             )
             if not revision:

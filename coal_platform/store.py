@@ -14,6 +14,55 @@ def _json_date(value: date | str | None) -> str | None:
     return value.isoformat() if isinstance(value, date) else value
 
 
+def compare_clause_sets(left_clauses: list[dict], right_clauses: list[dict]) -> dict:
+    compared_fields = (
+        "title",
+        "clause_level",
+        "clause_type",
+        "constraint_level",
+        "original_text",
+        "parameter_schema",
+        "page_no",
+        "bbox",
+    )
+    left_by_code = {item["clause_code"]: item for item in left_clauses}
+    right_by_code = {item["clause_code"]: item for item in right_clauses}
+    summary = {"added": 0, "removed": 0, "modified": 0, "unchanged": 0}
+    changes = []
+    for clause_code in sorted(set(left_by_code) | set(right_by_code)):
+        before = left_by_code.get(clause_code)
+        after = right_by_code.get(clause_code)
+        if before is None:
+            change_type = "added"
+        elif after is None:
+            change_type = "removed"
+        elif any(before.get(field) != after.get(field) for field in compared_fields):
+            change_type = "modified"
+        else:
+            summary["unchanged"] += 1
+            continue
+        summary[change_type] += 1
+        changes.append({"clause_code": clause_code, "change_type": change_type, "before": before, "after": after})
+    return {"summary": summary, "changes": changes}
+
+
+def _clause_payload(payload: dict) -> dict:
+    return {
+        "id": str(uuid4()),
+        "clause_code": payload["clause_code"],
+        "title": payload.get("title"),
+        "clause_level": payload.get("clause_level", 1),
+        "clause_type": payload.get("clause_type", "requirement"),
+        "constraint_level": payload.get("constraint_level", "待确认"),
+        "original_text": payload.get("original_text", ""),
+        "parameter_schema": payload.get("parameter_schema") or {},
+        "page_no": payload.get("page_no"),
+        "bbox": payload.get("bbox"),
+        "confidence": payload.get("confidence", 0.0),
+        "proof_status": payload.get("proof_status", "pending"),
+    }
+
+
 class DemoStore:
     demo_password = "coal123456"
 
@@ -24,6 +73,7 @@ class DemoStore:
         self.tasks: dict[str, dict] = {}
         self.audit_runs: dict[str, dict] = {}
         self.standards: dict[str, dict] = {}
+        self.standard_parse_revisions: dict[str, list[dict]] = {}
         self.rules: dict[str, dict] = {}
         self.executors: dict[str, dict] = {}
         self.reports: dict[str, dict] = {}
@@ -261,6 +311,18 @@ class DemoStore:
     def _standard(self, code: str, name: str, standard_type: str, status: str) -> dict:
         standard_id = str(uuid4())
         version_id = str(uuid4())
+        revision = {
+            "id": str(uuid4()),
+            "revision_no": "P1",
+            "status": "published",
+            "impact_flag": "no_impact",
+            "published_at": _now(),
+            "clauses": [
+                _clause_payload({"clause_code": "5.3.2", "title": "驱动功率配置", "constraint_level": "必须"}),
+                _clause_payload({"clause_code": "附录A", "title": "受控件类别", "constraint_level": "待确认"}),
+            ],
+        }
+        self.standard_parse_revisions[version_id] = [revision]
         return {
             "id": standard_id,
             "standard_code": code,
@@ -276,16 +338,7 @@ class DemoStore:
                     "publish_date": "2023-12-20",
                     "implement_date": "2024-07-01",
                     "status": status,
-                    "latest_parse_revision": {
-                        "id": str(uuid4()),
-                        "revision_no": "P1",
-                        "status": "published",
-                        "impact_flag": "no_impact",
-                        "clauses": [
-                            {"clause_code": "5.3.2", "title": "驱动功率配置", "constraint_level": "必须"},
-                            {"clause_code": "附录A", "title": "受控件类别", "constraint_level": "待确认"},
-                        ],
-                    },
+                    "latest_parse_revision": deepcopy(revision),
                 }
             ],
         }
@@ -538,14 +591,20 @@ class DemoStore:
         return standard.get("versions", []) if standard else []
 
     def get_standard_version(self, version_id: str) -> dict | None:
+        standard, version = self._find_standard_version(version_id)
+        if version:
+            item = deepcopy(version)
+            item["standard_code"] = standard["standard_code"]
+            item["standard_name"] = standard["standard_name"]
+            return item
+        return None
+
+    def _find_standard_version(self, version_id: str) -> tuple[dict | None, dict | None]:
         for standard in self.standards.values():
             for version in standard.get("versions", []):
                 if version.get("id") == version_id:
-                    item = deepcopy(version)
-                    item["standard_code"] = standard["standard_code"]
-                    item["standard_name"] = standard["standard_name"]
-                    return item
-        return None
+                    return standard, version
+        return None, None
 
     def create_standard_version(self, standard_id: str, payload: dict) -> dict | None:
         with self._lock:
@@ -561,7 +620,7 @@ class DemoStore:
                 return None
             version = {
                 "id": str(uuid4()),
-                "standard_id": standard_id,
+                "standard_id": standard["id"],
                 "full_code": full_code,
                 "version_label": payload["version_label"],
                 "publish_date": _json_date(payload.get("publish_date")),
@@ -575,23 +634,110 @@ class DemoStore:
                     "revision_no": "P1",
                     "status": "draft",
                     "impact_flag": "no_impact",
+                    "published_at": None,
                     "clauses": [],
                 },
             }
             standard.setdefault("versions", []).append(version)
+            self.standard_parse_revisions[version["id"]] = [version["latest_parse_revision"]]
             return deepcopy(version)
+
+    def list_standard_parse_revisions(self, version_id: str) -> list[dict] | None:
+        if not self.get_standard_version(version_id):
+            return None
+        return deepcopy(self.standard_parse_revisions.get(version_id, []))
+
+    def create_standard_parse_revision(self, version_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            _standard, version = self._find_standard_version(version_id)
+            if not version:
+                return None
+            revisions = self.standard_parse_revisions.setdefault(version_id, [])
+            revision = {
+                "id": str(uuid4()),
+                "revision_no": f"P{len(revisions) + 1}",
+                "status": "draft",
+                "impact_flag": payload.get("impact_flag", "no_impact"),
+                "published_at": None,
+                "clauses": deepcopy(
+                    [
+                        _clause_payload(item)
+                        for item in (
+                            payload["clauses"]
+                            if payload.get("clauses") is not None
+                            else version.get("latest_parse_revision", {}).get("clauses", [])
+                        )
+                    ]
+                ),
+            }
+            revisions.append(revision)
+            version["latest_parse_revision"] = deepcopy(revision)
+            return deepcopy(revision)
+
+    def publish_standard_parse_revision(self, revision_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            for version_id, revisions in self.standard_parse_revisions.items():
+                selected = next((item for item in revisions if item.get("id") == revision_id), None)
+                if not selected:
+                    continue
+                for revision in revisions:
+                    if revision is not selected and revision.get("status") == "published":
+                        revision["status"] = "archived"
+                selected["status"] = "published"
+                selected["published_at"] = _now()
+                _standard, version = self._find_standard_version(version_id)
+                if version:
+                    version["latest_parse_revision"] = deepcopy(selected)
+                    version["status"] = "active"
+                return deepcopy(selected)
+        return None
 
     def publish_standard_version(self, version_id: str, payload: dict) -> dict | None:
         with self._lock:
-            for standard in self.standards.values():
-                for version in standard.get("versions", []):
-                    if version.get("id") != version_id:
-                        continue
-                    version["status"] = "active"
-                    standard["status"] = "有效"
-                    version["latest_parse_revision"]["status"] = "published"
-                    return deepcopy(version)
-        return None
+            standard, version = self._find_standard_version(version_id)
+            if not version:
+                return None
+            revisions = self.standard_parse_revisions.setdefault(version_id, [])
+            if revisions:
+                for revision in revisions:
+                    if revision.get("status") == "published":
+                        revision["status"] = "archived"
+                revisions[-1]["status"] = "published"
+                revisions[-1]["published_at"] = _now()
+                version["latest_parse_revision"] = deepcopy(revisions[-1])
+            version["status"] = "active"
+            standard["status"] = "有效"
+            return deepcopy(version)
+
+    def abolish_standard_version(self, version_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            standard, version = self._find_standard_version(version_id)
+            if not version:
+                return None
+            successor_id = payload.get("superseded_by_version_id")
+            if successor_id and not self.get_standard_version(successor_id):
+                return None
+            version["status"] = "obsolete"
+            version["abolish_date"] = _json_date(payload.get("abolish_date")) or datetime.now(UTC).date().isoformat()
+            version["superseded_by_id"] = successor_id
+            if not any(item.get("status") == "active" for item in standard.get("versions", [])):
+                standard["status"] = "obsolete"
+            return deepcopy(version)
+
+    def compare_standard_versions(self, version_id: str, other_version_id: str) -> dict | None:
+        left = self.get_standard_version(version_id)
+        right = self.get_standard_version(other_version_id)
+        if not left or not right:
+            return None
+        comparison = compare_clause_sets(
+            left.get("latest_parse_revision", {}).get("clauses", []),
+            right.get("latest_parse_revision", {}).get("clauses", []),
+        )
+        return {
+            "left_version": {"id": left["id"], "full_code": left["full_code"]},
+            "right_version": {"id": right["id"], "full_code": right["full_code"]},
+            **comparison,
+        }
 
     def list_standard_clauses(self, version_id: str) -> list[dict] | None:
         version = self.get_standard_version(version_id)

@@ -236,3 +236,71 @@ def test_only_admin_can_create_and_publish_standard_versions() -> None:
             json={"version_label": "2026"},
         )
         assert missing_standard.status_code == 404
+
+
+def test_standard_parse_revision_comparison_and_abolish_workflow() -> None:
+    with _client() as client:
+        admin_headers = _login(client, login_name="admin")
+        standard = client.get("/api/v1/standards", headers=admin_headers).json()["data"][0]
+        original_version = standard["versions"][0]
+        new_version = client.post(
+            f"/api/v1/standards/{standard['id']}/versions",
+            headers=admin_headers,
+            json={"version_label": "2099", "full_code": f"{standard['standard_code']}-2099"},
+        ).json()["data"]
+
+        revision = client.post(
+            f"/api/v1/standard-versions/{new_version['id']}/parse-revisions",
+            headers=admin_headers,
+            json={
+                "impact_flag": "audit_impact",
+                "clauses": [
+                    {
+                        "clause_code": "5.3.2",
+                        "title": "驱动功率配置",
+                        "constraint_level": "必须",
+                        "original_text": "驱动功率应满足新版设计输送能力。",
+                    },
+                    {
+                        "clause_code": "7.1",
+                        "title": "检验要求",
+                        "constraint_level": "必须",
+                        "original_text": "出厂前必须完成检验。",
+                    },
+                ],
+            },
+        )
+        assert revision.status_code == 201
+        assert revision.json()["data"]["revision_no"] == "P2"
+
+        published = client.post(
+            f"/api/v1/standard-parse-revisions/{revision.json()['data']['id']}/publish",
+            headers=admin_headers,
+        )
+        assert published.status_code == 200
+        revisions = client.get(
+            f"/api/v1/standard-versions/{new_version['id']}/parse-revisions",
+            headers=admin_headers,
+        ).json()["data"]
+        assert [item["status"] for item in revisions] == ["draft", "published"]
+
+        compared = client.get(
+            f"/api/v1/standard-versions/{original_version['id']}/compare/{new_version['id']}",
+            headers=admin_headers,
+        )
+        assert compared.status_code == 200
+        assert compared.json()["data"]["summary"] == {
+            "added": 1,
+            "removed": 1,
+            "modified": 1,
+            "unchanged": 0,
+        }
+
+        abolished = client.post(
+            f"/api/v1/standard-versions/{original_version['id']}/abolish",
+            headers=admin_headers,
+            json={"abolish_date": "2099-07-01", "superseded_by_version_id": new_version["id"]},
+        )
+        assert abolished.status_code == 200
+        assert abolished.json()["data"]["status"] == "obsolete"
+        assert abolished.json()["data"]["superseded_by_id"] == new_version["id"]

@@ -56,6 +56,30 @@ class StandardVersionCreateRequest(BaseModel):
     status: str = "draft"
 
 
+class StandardClausePayload(BaseModel):
+    clause_code: str
+    title: str | None = None
+    clause_level: int = 1
+    clause_type: str = "requirement"
+    constraint_level: str = "待确认"
+    original_text: str = ""
+    parameter_schema: dict[str, Any] = Field(default_factory=dict)
+    page_no: int | None = None
+    bbox: dict[str, Any] | None = None
+    confidence: float = 0.0
+    proof_status: str = "pending"
+
+
+class StandardParseRevisionCreateRequest(BaseModel):
+    impact_flag: str = "no_impact"
+    clauses: list[StandardClausePayload] | None = None
+
+
+class StandardVersionAbolishRequest(BaseModel):
+    abolish_date: date | None = None
+    superseded_by_version_id: str | None = None
+
+
 class RuleCreateRequest(BaseModel):
     rule_code: str
     rule_name: str

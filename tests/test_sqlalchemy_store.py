@@ -7,7 +7,16 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from coal_platform.database import Base
 from coal_platform.main import create_app
-from coal_platform.models import AuditRun, OperationLog, QueueJob, RoundStandard, Standard, StandardVersion
+from coal_platform.models import (
+    AuditRun,
+    OperationLog,
+    QueueJob,
+    RoundStandard,
+    Standard,
+    StandardClause,
+    StandardParseRevision,
+    StandardVersion,
+)
 from coal_platform.sqlalchemy_store import SqlAlchemyStore
 from coal_platform.storage import InMemoryObjectStorage
 from coal_platform.store import DemoStore
@@ -148,6 +157,64 @@ def test_database_store_persists_standard_catalog_and_round_snapshot(tmp_path: P
         assert session.scalar(select(func.count()).select_from(Standard)) == 6
         assert session.scalar(select(func.count()).select_from(StandardVersion)) == 6
         assert session.scalar(select(func.count()).select_from(RoundStandard)) == 1
+
+
+def test_database_store_versions_parse_revisions_and_compares_clauses(tmp_path: Path) -> None:
+    store, factory = _store(tmp_path / "standard-revisions.db")
+    admin = store.authenticate("admin", DemoStore.demo_password)
+    assert admin
+    standard = store.list_standards()[0]
+    original_version = standard["versions"][0]
+    new_version = store.create_standard_version(
+        standard["id"],
+        {
+            "version_label": "2099",
+            "full_code": f"{standard['standard_code']}-2099",
+            "_operator_user_id": admin["id"],
+        },
+    )
+    assert new_version
+    revision = store.create_standard_parse_revision(
+        new_version["id"],
+        {
+            "impact_flag": "audit_impact",
+            "clauses": [
+                {
+                    "clause_code": "5.3.2",
+                    "title": "驱动功率配置",
+                    "constraint_level": "必须",
+                    "original_text": "驱动功率应满足新版设计输送能力。",
+                },
+                {
+                    "clause_code": "7.1",
+                    "title": "检验要求",
+                    "constraint_level": "必须",
+                    "original_text": "出厂前必须完成检验。",
+                },
+            ],
+            "_operator_user_id": admin["id"],
+        },
+    )
+    assert revision and revision["revision_no"] == "P2"
+    published = store.publish_standard_parse_revision(revision["id"], {"_operator_user_id": admin["id"]})
+    assert published and published["status"] == "published"
+
+    compared = store.compare_standard_versions(original_version["id"], new_version["id"])
+    assert compared and compared["summary"] == {"added": 1, "removed": 1, "modified": 1, "unchanged": 0}
+    abolished = store.abolish_standard_version(
+        original_version["id"],
+        {
+            "abolish_date": datetime(2099, 7, 1, tzinfo=UTC).date(),
+            "superseded_by_version_id": new_version["id"],
+            "_operator_user_id": admin["id"],
+        },
+    )
+    assert abolished and abolished["status"] == "obsolete"
+    assert abolished["superseded_by_id"] == new_version["id"]
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(StandardParseRevision)) == 7
+        assert session.scalar(select(func.count()).select_from(StandardClause)) == 12
 
 
 def test_database_store_persists_and_revokes_auth_session(tmp_path: Path) -> None:

@@ -21,7 +21,9 @@ from coal_platform.schemas import (
     RuleCreateRequest,
     RuleVersionCreateRequest,
     StandardCreateRequest,
+    StandardParseRevisionCreateRequest,
     StandardRelationPayload,
+    StandardVersionAbolishRequest,
     StandardVersionCreateRequest,
     TaskCreateRequest,
 )
@@ -43,6 +45,9 @@ tasks_router = APIRouter(prefix="/tasks", tags=["tasks"], dependencies=[Depends(
 rounds_router = APIRouter(prefix="/rounds", tags=["rounds"], dependencies=[Depends(require_user)])
 standards_router = APIRouter(prefix="/standards", tags=["standards"], dependencies=[Depends(require_user)])
 standard_versions_router = APIRouter(prefix="/standard-versions", tags=["standard-versions"], dependencies=[Depends(require_user)])
+standard_parse_revisions_router = APIRouter(
+    prefix="/standard-parse-revisions", tags=["standard-parse-revisions"], dependencies=[Depends(require_user)]
+)
 rules_router = APIRouter(prefix="/rules", tags=["rules"], dependencies=[Depends(require_user)])
 executors_router = APIRouter(prefix="/executors", tags=["executors"], dependencies=[Depends(require_user)])
 issues_router = APIRouter(prefix="/issues", tags=["issues"], dependencies=[Depends(require_user)])
@@ -385,6 +390,34 @@ def list_standard_versions(standard_id: str, request: Request) -> dict:
     return _ok(request.app.state.store.list_standard_versions(standard_id))
 
 
+@standard_versions_router.get("/{standard_version_id}/parse-revisions")
+def list_standard_parse_revisions(standard_version_id: str, request: Request) -> dict:
+    revisions = request.app.state.store.list_standard_parse_revisions(standard_version_id)
+    if revisions is None:
+        raise HTTPException(status_code=404, detail="standard version not found")
+    return _ok(revisions)
+
+
+@standard_versions_router.post("/{standard_version_id}/parse-revisions", dependencies=[Depends(require_admin)])
+def create_standard_parse_revision(
+    standard_version_id: str, payload: StandardParseRevisionCreateRequest, request: Request
+) -> JSONResponse:
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    revision = request.app.state.store.create_standard_parse_revision(standard_version_id, data)
+    if not revision:
+        raise HTTPException(status_code=404, detail="standard version not found")
+    return JSONResponse(status_code=201, content=_ok(revision, "standard parse revision created"))
+
+
+@standard_versions_router.get("/{standard_version_id}/compare/{other_version_id}")
+def compare_standard_versions(standard_version_id: str, other_version_id: str, request: Request) -> dict:
+    comparison = request.app.state.store.compare_standard_versions(standard_version_id, other_version_id)
+    if not comparison:
+        raise HTTPException(status_code=404, detail="standard version not found")
+    return _ok(comparison)
+
+
 @standard_versions_router.get("/{standard_version_id}")
 def get_standard_version(standard_version_id: str, request: Request) -> dict:
     version = request.app.state.store.get_standard_version(standard_version_id)
@@ -404,12 +437,32 @@ def publish_standard_version(standard_version_id: str, request: Request) -> dict
     return _ok(version, "standard version published")
 
 
+@standard_versions_router.post("/{standard_version_id}/abolish", dependencies=[Depends(require_admin)])
+def abolish_standard_version(
+    standard_version_id: str, payload: StandardVersionAbolishRequest, request: Request
+) -> dict:
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    version = request.app.state.store.abolish_standard_version(standard_version_id, data)
+    if not version:
+        raise HTTPException(status_code=404, detail="standard version or superseding version not found")
+    return _ok(version, "standard version abolished")
+
+
 @standard_versions_router.get("/{standard_version_id}/clauses")
 def list_standard_clauses(standard_version_id: str, request: Request) -> dict:
     clauses = request.app.state.store.list_standard_clauses(standard_version_id)
     if clauses is None:
         raise HTTPException(status_code=404, detail="standard version not found")
     return _ok(clauses)
+
+
+@standard_parse_revisions_router.post("/{revision_id}/publish", dependencies=[Depends(require_admin)])
+def publish_standard_parse_revision(revision_id: str, request: Request) -> dict:
+    revision = request.app.state.store.publish_standard_parse_revision(revision_id, _operation_context(request))
+    if not revision:
+        raise HTTPException(status_code=404, detail="standard parse revision not found")
+    return _ok(revision, "standard parse revision published")
 
 
 @standards_router.post("/{standard_id}/versions/{version_id}/relations", dependencies=[Depends(require_admin)])
@@ -577,6 +630,7 @@ def register_routers(app: FastAPI, prefix: str = "/api/v1") -> None:
     app.include_router(rounds_router, prefix=prefix)
     app.include_router(standards_router, prefix=prefix)
     app.include_router(standard_versions_router, prefix=prefix)
+    app.include_router(standard_parse_revisions_router, prefix=prefix)
     app.include_router(rules_router, prefix=prefix)
     app.include_router(executors_router, prefix=prefix)
     app.include_router(issues_router, prefix=prefix)
