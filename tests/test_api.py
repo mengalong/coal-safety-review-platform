@@ -448,6 +448,25 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
         assert len(snapshot["rules"]) == 3
         assert {item["source_type"] for item in snapshot["rules"]} == {"global", "file_trigger"}
 
+        started = client.post(
+            f"/api/v1/rounds/{task['current_round_id']}/audit/start",
+            headers=headers,
+        )
+        assert started.status_code == 202
+        executions = client.get(
+            f"/api/v1/rounds/{task['current_round_id']}/rule-executions",
+            headers=headers,
+        )
+        assert executions.status_code == 200
+        assert len(executions.json()["data"]) == 3
+        execution_id = executions.json()["data"][0]["id"]
+        execution = client.get(f"/api/v1/rule-executions/{execution_id}", headers=headers)
+        attempts = client.get(f"/api/v1/rule-executions/{execution_id}/attempts", headers=headers)
+        assert execution.status_code == 200
+        assert execution.json()["data"]["status"] == "pending"
+        assert attempts.status_code == 200
+        assert attempts.json()["data"] == []
+
         repeated = client.post(
             f"/api/v1/rounds/{task['current_round_id']}/rules/assemble",
             headers=headers,

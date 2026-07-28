@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from datetime import UTC, date, datetime
+from hashlib import sha256
 from threading import RLock
 from uuid import uuid4
 
@@ -99,6 +101,7 @@ class DemoStore:
         self.auth_sessions: dict[str, dict] = {}
         self.tasks: dict[str, dict] = {}
         self.audit_runs: dict[str, dict] = {}
+        self.rule_executions: dict[str, dict] = {}
         self.standards: dict[str, dict] = {}
         self.standard_parse_revisions: dict[str, list[dict]] = {}
         self.rules: dict[str, dict] = {}
@@ -1290,11 +1293,54 @@ class DemoStore:
                 "created_at": _now(),
             }
             self.audit_runs[run_id] = run
+            for round_rule in matching_round.get("rules", []):
+                if not round_rule.get("enabled", True):
+                    continue
+                input_snapshot = {
+                    "round_id": round_id,
+                    "rule_snapshot_no": round_rule.get("snapshot_no"),
+                    "rule_version_id": round_rule["rule_version_id"],
+                }
+                input_hash = sha256(json.dumps(input_snapshot, sort_keys=True).encode()).hexdigest()
+                execution_id = str(uuid4())
+                self.rule_executions[execution_id] = {
+                    "id": execution_id,
+                    "audit_run_id": run_id,
+                    "round_id": round_id,
+                    "rule_version_id": round_rule["rule_version_id"],
+                    "rule_code": round_rule.get("rule_code"),
+                    "executor_version_id": round_rule["executor_version_id"],
+                    "status": "pending",
+                    "input_snapshot": input_snapshot,
+                    "normalized_input_hash": input_hash,
+                    "retry_count": 0,
+                    "attempt_count": 0,
+                    "attempts": [],
+                    "created_at": _now(),
+                }
             matching_task["status"] = "auditing"
             matching_task["updated_at"] = _now()
             matching_round["status"] = "auditing"
             matching_round["updated_at"] = _now()
             return deepcopy(run)
+
+    def list_audit_runs(self, round_id: str) -> list[dict] | None:
+        if not self.get_round(round_id):
+            return None
+        return [deepcopy(item) for item in self.audit_runs.values() if item["round_id"] == round_id]
+
+    def list_rule_executions(self, round_id: str) -> list[dict] | None:
+        if not self.get_round(round_id):
+            return None
+        return [deepcopy(item) for item in self.rule_executions.values() if item["round_id"] == round_id]
+
+    def get_rule_execution(self, execution_id: str) -> dict | None:
+        item = self.rule_executions.get(execution_id)
+        return deepcopy(item) if item else None
+
+    def list_execution_attempts(self, execution_id: str) -> list[dict] | None:
+        item = self.rule_executions.get(execution_id)
+        return deepcopy(item.get("attempts", [])) if item else None
 
     def update_issue(self, issue_id: str, payload: dict) -> dict | None:
         with self._lock:

@@ -97,6 +97,8 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     assert reviewer
 
     task = store.create_task({"owner_user_id": reviewer["id"], "_operator_user_id": reviewer["id"]})
+    snapshot = store.assemble_round_rules(task["current_round_id"], {})
+    assert snapshot and len(snapshot["rules"]) == 2
     run = store.start_audit(
         task["current_round_id"],
         {"_operator_user_id": reviewer["id"], "_trace_id": "audit-start-test"},
@@ -109,6 +111,9 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(AuditRun)) == 1
         assert session.scalar(select(func.count()).select_from(QueueJob)) == 1
+    executions = store.list_rule_executions(task["current_round_id"])
+    assert executions and len(executions) == 2
+    assert executions[0]["status"] == "pending"
 
 
 def test_database_store_persists_standard_catalog_and_round_snapshot(tmp_path: Path) -> None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime
+from hashlib import sha256
 from typing import Any
 from uuid import UUID
 
@@ -23,6 +25,8 @@ from coal_platform.models import (
     RoundStandard,
     RoundStandardCoverage,
     RuleDefinition,
+    RuleExecution,
+    RuleExecutionAttempt,
     RulePack,
     RulePackItem,
     RuleVersion,
@@ -1839,6 +1843,29 @@ class SqlAlchemyStore(DemoStore):
             audit_run = AuditRun(round_id=round_item.id, run_no=latest_run_no + 1, status="queued")
             session.add(audit_run)
             session.flush()
+            round_rules = session.scalars(
+                select(RoundRule).where(RoundRule.round_id == round_item.id, RoundRule.enabled.is_(True))
+            ).all()
+            for round_rule in round_rules:
+                input_snapshot = {
+                    "round_id": str(round_item.id),
+                    "rule_snapshot_no": round_rule.snapshot_no,
+                    "rule_version_id": str(round_rule.rule_version_id),
+                }
+                normalized_input_hash = sha256(
+                    json.dumps(input_snapshot, sort_keys=True).encode()
+                ).hexdigest()
+                session.add(
+                    RuleExecution(
+                        audit_run_id=audit_run.id,
+                        round_id=round_item.id,
+                        rule_version_id=round_rule.rule_version_id,
+                        executor_version_id=round_rule.executor_version_id,
+                        status="pending",
+                        input_snapshot=input_snapshot,
+                        normalized_input_hash=normalized_input_hash,
+                    )
+                )
             job = QueueJob(
                 job_code=f"AUDIT-{audit_run.id}",
                 job_type="audit",
@@ -1860,6 +1887,83 @@ class SqlAlchemyStore(DemoStore):
             )
             session.flush()
             return self._audit_run_dict(audit_run, job_id=job.id)
+
+    def list_audit_runs(self, round_id: str) -> list[dict[str, Any]] | None:
+        round_uuid = _uuid(round_id)
+        if not round_uuid:
+            return None
+        with self.session_factory() as session:
+            if not session.get(AuditRound, round_uuid):
+                return None
+            runs = session.scalars(
+                select(AuditRun).where(AuditRun.round_id == round_uuid).order_by(AuditRun.run_no.desc())
+            ).all()
+            return [self._audit_run_dict(item) for item in runs]
+
+    def _rule_execution_dict(self, session: Session, item: RuleExecution) -> dict[str, Any]:
+        version = session.get(RuleVersion, item.rule_version_id)
+        definition = session.get(RuleDefinition, version.rule_definition_id) if version else None
+        return {
+            "id": str(item.id),
+            "audit_run_id": str(item.audit_run_id),
+            "round_id": str(item.round_id),
+            "rule_version_id": str(item.rule_version_id),
+            "rule_code": definition.rule_code if definition else None,
+            "executor_version_id": str(item.executor_version_id),
+            "dynamic_item_id": str(item.dynamic_item_id) if item.dynamic_item_id else None,
+            "status": item.status,
+            "input_snapshot": item.input_snapshot,
+            "normalized_input_hash": item.normalized_input_hash,
+            "result_payload": item.result_payload,
+            "confidence": float(item.confidence) if item.confidence is not None else None,
+            "retry_count": item.retry_count,
+            "attempt_count": item.attempt_count,
+            "elapsed_ms": item.elapsed_ms,
+            "is_expired": item.is_expired,
+            "created_at": _iso(item.created_at),
+            "updated_at": _iso(item.updated_at),
+        }
+
+    def list_rule_executions(self, round_id: str) -> list[dict[str, Any]] | None:
+        round_uuid = _uuid(round_id)
+        if not round_uuid:
+            return None
+        with self.session_factory() as session:
+            if not session.get(AuditRound, round_uuid):
+                return None
+            items = session.scalars(
+                select(RuleExecution).where(RuleExecution.round_id == round_uuid).order_by(RuleExecution.created_at)
+            ).all()
+            return [self._rule_execution_dict(session, item) for item in items]
+
+    def get_rule_execution(self, execution_id: str) -> dict[str, Any] | None:
+        execution_uuid = _uuid(execution_id)
+        if not execution_uuid:
+            return None
+        with self.session_factory() as session:
+            item = session.get(RuleExecution, execution_uuid)
+            return self._rule_execution_dict(session, item) if item else None
+
+    def list_execution_attempts(self, execution_id: str) -> list[dict[str, Any]] | None:
+        execution_uuid = _uuid(execution_id)
+        if not execution_uuid:
+            return None
+        with self.session_factory() as session:
+            if not session.get(RuleExecution, execution_uuid):
+                return None
+            attempts = session.scalars(
+                select(RuleExecutionAttempt)
+                .where(RuleExecutionAttempt.rule_execution_id == execution_uuid)
+                .order_by(RuleExecutionAttempt.attempt_no)
+            ).all()
+            return [{
+                "id": str(item.id), "rule_execution_id": str(item.rule_execution_id),
+                "attempt_no": item.attempt_no, "attempt_kind": item.attempt_kind,
+                "executor_version_id": str(item.executor_version_id), "status": item.status,
+                "input_payload": item.input_payload, "output_payload": item.output_payload,
+                "error_payload": item.error_payload, "token_usage": item.token_usage,
+                "started_at": _iso(item.started_at), "finished_at": _iso(item.finished_at),
+            } for item in attempts]
 
     @staticmethod
     def _audit_run_dict(audit_run: AuditRun, job_id: UUID | None = None) -> dict[str, Any]:

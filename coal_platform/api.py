@@ -54,6 +54,7 @@ standard_parse_revisions_router = APIRouter(
 )
 rules_router = APIRouter(prefix="/rules", tags=["rules"], dependencies=[Depends(require_user)])
 rule_versions_router = APIRouter(prefix="/rule-versions", tags=["rule-versions"], dependencies=[Depends(require_user)])
+rule_executions_router = APIRouter(prefix="/rule-executions", tags=["rule-executions"], dependencies=[Depends(require_user)])
 rule_packs_router = APIRouter(prefix="/rule-packs", tags=["rule-packs"], dependencies=[Depends(require_user)])
 executors_router = APIRouter(prefix="/executors", tags=["executors"], dependencies=[Depends(require_user)])
 issues_router = APIRouter(prefix="/issues", tags=["issues"], dependencies=[Depends(require_user)])
@@ -360,6 +361,52 @@ def start_audit(round_id: str, request: Request) -> JSONResponse:
     if not run:
         raise HTTPException(status_code=404, detail="round not found")
     return JSONResponse(status_code=202, content=_ok(run, "audit queued"))
+
+
+@rounds_router.get("/{round_id}/audit-runs")
+def list_audit_runs(round_id: str, request: Request) -> dict:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if task:
+        _ensure_task_access(request, task)
+    return _ok(request.app.state.store.list_audit_runs(round_id) or [])
+
+
+@rounds_router.get("/{round_id}/rule-executions")
+def list_rule_executions(round_id: str, request: Request) -> dict:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if task:
+        _ensure_task_access(request, task)
+    return _ok(request.app.state.store.list_rule_executions(round_id) or [])
+
+
+@rule_executions_router.get("/{execution_id}")
+def get_rule_execution(execution_id: str, request: Request) -> dict:
+    item = request.app.state.store.get_rule_execution(execution_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="rule execution not found")
+    round_item = request.app.state.store.get_round(item.get("round_id", ""))
+    task = request.app.state.store.get_task(round_item.get("task_id", "")) if round_item else None
+    if task:
+        _ensure_task_access(request, task)
+    return _ok(item)
+
+
+@rule_executions_router.get("/{execution_id}/attempts")
+def list_execution_attempts(execution_id: str, request: Request) -> dict:
+    item = request.app.state.store.get_rule_execution(execution_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="rule execution not found")
+    round_item = request.app.state.store.get_round(item.get("round_id", ""))
+    task = request.app.state.store.get_task(round_item.get("task_id", "")) if round_item else None
+    if task:
+        _ensure_task_access(request, task)
+    return _ok(request.app.state.store.list_execution_attempts(execution_id) or [])
 
 
 @standards_router.get("")
@@ -736,6 +783,7 @@ def register_routers(app: FastAPI, prefix: str = "/api/v1") -> None:
     app.include_router(standard_parse_revisions_router, prefix=prefix)
     app.include_router(rules_router, prefix=prefix)
     app.include_router(rule_versions_router, prefix=prefix)
+    app.include_router(rule_executions_router, prefix=prefix)
     app.include_router(rule_packs_router, prefix=prefix)
     app.include_router(executors_router, prefix=prefix)
     app.include_router(issues_router, prefix=prefix)
