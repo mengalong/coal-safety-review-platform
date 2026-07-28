@@ -1342,6 +1342,47 @@ class DemoStore:
         item = self.rule_executions.get(execution_id)
         return deepcopy(item.get("attempts", [])) if item else None
 
+    def record_execution_attempt(self, execution_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            item = self.rule_executions.get(execution_id)
+            if not item:
+                return None
+            status = payload.get("status", "succeeded")
+            if status not in {"running", "succeeded", "failed", "unable_to_determine", "exception", "canceled", "expired"}:
+                raise ValueError("invalid execution attempt status")
+            attempt = {
+                "id": str(uuid4()),
+                "rule_execution_id": execution_id,
+                "attempt_no": len(item["attempts"]) + 1,
+                "attempt_kind": payload.get("attempt_kind", "normal"),
+                "executor_version_id": item["executor_version_id"],
+                "status": status,
+                "input_payload": deepcopy(payload.get("input_payload") or item["input_snapshot"]),
+                "output_payload": deepcopy(payload.get("output_payload")),
+                "error_payload": deepcopy(payload.get("error_payload")),
+                "elapsed_ms": payload.get("elapsed_ms"),
+                "created_at": _now(),
+            }
+            item["attempts"].append(attempt)
+            item["attempt_count"] = len(item["attempts"])
+            item["status"] = status
+            item["result_payload"] = deepcopy(payload.get("output_payload"))
+            item["elapsed_ms"] = payload.get("elapsed_ms")
+            item["updated_at"] = _now()
+            return deepcopy(item)
+
+    def retry_rule_execution(self, execution_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            item = self.rule_executions.get(execution_id)
+            if not item:
+                return None
+            if item["status"] in {"running", "pending"}:
+                raise ValueError("execution is already queued or running")
+            item["retry_count"] += 1
+            item["status"] = "pending"
+            item["updated_at"] = _now()
+            return deepcopy(item)
+
     def update_issue(self, issue_id: str, payload: dict) -> dict | None:
         with self._lock:
             _key, issue = self._find_record(self.issues, issue_id)

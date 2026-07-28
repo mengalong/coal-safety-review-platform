@@ -1965,6 +1965,58 @@ class SqlAlchemyStore(DemoStore):
                 "started_at": _iso(item.started_at), "finished_at": _iso(item.finished_at),
             } for item in attempts]
 
+    def record_execution_attempt(self, execution_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        execution_uuid = _uuid(execution_id)
+        if not execution_uuid:
+            return None
+        allowed_statuses = {"running", "succeeded", "failed", "unable_to_determine", "exception", "canceled", "expired"}
+        status = payload.get("status", "succeeded")
+        if status not in allowed_statuses:
+            raise ValueError("invalid execution attempt status")
+        with self.session_factory() as session, session.begin():
+            execution = session.get(RuleExecution, execution_uuid)
+            if not execution:
+                return None
+            attempt_no = (session.scalar(
+                select(func.max(RuleExecutionAttempt.attempt_no)).where(
+                    RuleExecutionAttempt.rule_execution_id == execution.id
+                )
+            ) or 0) + 1
+            attempt = RuleExecutionAttempt(
+                rule_execution_id=execution.id,
+                attempt_no=attempt_no,
+                attempt_kind=payload.get("attempt_kind", "normal"),
+                executor_version_id=execution.executor_version_id,
+                input_payload=payload.get("input_payload") or execution.input_snapshot,
+                output_payload=payload.get("output_payload"),
+                error_payload=payload.get("error_payload"),
+                started_at=datetime.now(UTC),
+                finished_at=datetime.now(UTC) if status != "running" else None,
+                status=status,
+            )
+            session.add(attempt)
+            execution.status = status
+            execution.result_payload = payload.get("output_payload")
+            execution.elapsed_ms = payload.get("elapsed_ms")
+            execution.attempt_count = attempt_no
+            session.flush()
+            return self._rule_execution_dict(session, execution)
+
+    def retry_rule_execution(self, execution_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        execution_uuid = _uuid(execution_id)
+        if not execution_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            execution = session.get(RuleExecution, execution_uuid)
+            if not execution:
+                return None
+            if execution.status in {"running", "pending"}:
+                raise ValueError("execution is already queued or running")
+            execution.retry_count += 1
+            execution.status = "pending"
+            session.flush()
+            return self._rule_execution_dict(session, execution)
+
     @staticmethod
     def _audit_run_dict(audit_run: AuditRun, job_id: UUID | None = None) -> dict[str, Any]:
         return {

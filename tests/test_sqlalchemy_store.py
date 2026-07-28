@@ -114,6 +114,13 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     executions = store.list_rule_executions(task["current_round_id"])
     assert executions and len(executions) == 2
     assert executions[0]["status"] == "pending"
+    updated = store.record_execution_attempt(
+        executions[0]["id"],
+        {"status": "failed", "error_payload": {"code": "TIMEOUT"}, "elapsed_ms": 900},
+    )
+    assert updated and updated["status"] == "failed" and updated["attempt_count"] == 1
+    retried = store.retry_rule_execution(executions[0]["id"], {})
+    assert retried and retried["status"] == "pending" and retried["retry_count"] == 1
 
 
 def test_database_store_persists_standard_catalog_and_round_snapshot(tmp_path: Path) -> None:

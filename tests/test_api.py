@@ -466,6 +466,16 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
         assert execution.json()["data"]["status"] == "pending"
         assert attempts.status_code == 200
         assert attempts.json()["data"] == []
+        recorded = client.post(
+            f"/api/v1/rule-executions/{execution_id}/attempts",
+            headers=headers,
+            json={"status": "failed", "error_payload": {"code": "TIMEOUT"}, "elapsed_ms": 1200},
+        )
+        assert recorded.status_code == 200
+        assert recorded.json()["data"]["status"] == "failed"
+        retried = client.post(f"/api/v1/rule-executions/{execution_id}/retry", headers=headers)
+        assert retried.status_code == 200
+        assert retried.json()["data"]["retry_count"] == 1
 
         repeated = client.post(
             f"/api/v1/rounds/{task['current_round_id']}/rules/assemble",

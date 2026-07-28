@@ -122,6 +122,15 @@ class RoundRuleAssemblyRequest(BaseModel):
     rule_pack_ids: list[str] = Field(default_factory=list)
 
 
+class ExecutionAttemptRequest(BaseModel):
+    status: str = "succeeded"
+    attempt_kind: str = "normal"
+    input_payload: dict[str, Any] = Field(default_factory=dict)
+    output_payload: dict[str, Any] | None = None
+    error_payload: dict[str, Any] | None = None
+    elapsed_ms: int | None = Field(default=None, ge=0)
+
+
 class IssueUpdateRequest(BaseModel):
     title: str | None = None
     description: str | None = None

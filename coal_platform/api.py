@@ -14,6 +14,7 @@ from coal_platform.request_context import get_trace_id
 from coal_platform.rule_engine import FIXED_AUDIT_STAGES, RuleConfigurationError
 from coal_platform.schemas import (
     BasicInfoPayload,
+    ExecutionAttemptRequest,
     IssueUpdateRequest,
     LoginRequest,
     LoginResponse,
@@ -407,6 +408,46 @@ def list_execution_attempts(execution_id: str, request: Request) -> dict:
     if task:
         _ensure_task_access(request, task)
     return _ok(request.app.state.store.list_execution_attempts(execution_id) or [])
+
+
+@rule_executions_router.post("/{execution_id}/attempts")
+def record_execution_attempt(
+    execution_id: str, payload: ExecutionAttemptRequest, request: Request
+) -> dict:
+    item = request.app.state.store.get_rule_execution(execution_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="rule execution not found")
+    round_item = request.app.state.store.get_round(item.get("round_id", ""))
+    task = request.app.state.store.get_task(round_item.get("task_id", "")) if round_item else None
+    if task:
+        _ensure_task_access(request, task)
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    try:
+        result = request.app.state.store.record_execution_attempt(execution_id, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not result:
+        raise HTTPException(status_code=404, detail="rule execution not found")
+    return _ok(result, "execution attempt recorded")
+
+
+@rule_executions_router.post("/{execution_id}/retry")
+def retry_rule_execution(execution_id: str, request: Request) -> dict:
+    item = request.app.state.store.get_rule_execution(execution_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="rule execution not found")
+    round_item = request.app.state.store.get_round(item.get("round_id", ""))
+    task = request.app.state.store.get_task(round_item.get("task_id", "")) if round_item else None
+    if task:
+        _ensure_task_access(request, task)
+    try:
+        result = request.app.state.store.retry_rule_execution(execution_id, _operation_context(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not result:
+        raise HTTPException(status_code=404, detail="rule execution not found")
+    return _ok(result, "rule execution queued for retry")
 
 
 @standards_router.get("")
