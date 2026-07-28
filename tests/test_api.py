@@ -469,13 +469,36 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
         recorded = client.post(
             f"/api/v1/rule-executions/{execution_id}/attempts",
             headers=headers,
-            json={"status": "failed", "error_payload": {"code": "TIMEOUT"}, "elapsed_ms": 1200},
+            json={
+                "status": "failed",
+                "error_payload": {"code": "TIMEOUT"},
+                "output_payload": {"issue": {
+                    "issue_code": "MODEL-INCONSISTENT",
+                    "title": "产品型号不一致",
+                    "description": "说明书与图纸型号不一致",
+                    "severity": "严重",
+                }},
+                "elapsed_ms": 1200,
+            },
         )
         assert recorded.status_code == 200
         assert recorded.json()["data"]["status"] == "failed"
         retried = client.post(f"/api/v1/rule-executions/{execution_id}/retry", headers=headers)
         assert retried.status_code == 200
         assert retried.json()["data"]["retry_count"] == 1
+        issues = client.get(
+            "/api/v1/issues", headers=headers, params={"round_id": task["current_round_id"]}
+        )
+        assert issues.status_code == 200
+        assert len(issues.json()["data"]) == 1
+        issue_id = issues.json()["data"][0]["id"]
+        confirmed = client.post(
+            f"/api/v1/issues/{issue_id}/confirm",
+            headers=headers,
+            json={"reason": "证据已人工核对"},
+        )
+        assert confirmed.status_code == 200
+        assert confirmed.json()["data"]["status"] == "confirmed"
 
         repeated = client.post(
             f"/api/v1/rounds/{task['current_round_id']}/rules/assemble",

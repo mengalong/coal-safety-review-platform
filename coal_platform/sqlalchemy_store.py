@@ -19,6 +19,7 @@ from coal_platform.models import (
     DynamicAuditItem,
     ExecutorDefinition,
     ExecutorVersion,
+    IssueSource,
     OperationLog,
     QueueJob,
     RoundRule,
@@ -1965,6 +1966,96 @@ class SqlAlchemyStore(DemoStore):
                 "started_at": _iso(item.started_at), "finished_at": _iso(item.finished_at),
             } for item in attempts]
 
+    @staticmethod
+    def _issue_dict(issue: AuditIssue) -> dict[str, Any]:
+        return {
+            "id": str(issue.id), "round_id": str(issue.round_id), "issue_code": issue.issue_code,
+            "title": issue.title, "description": issue.description, "category_code": issue.category_code,
+            "severity": issue.severity, "status": issue.status, "system_conclusion": issue.system_conclusion,
+            "manual_conclusion": issue.manual_conclusion, "affects_conclusion": issue.affects_conclusion,
+            "manual_reason": issue.manual_reason, "created_at": _iso(issue.created_at),
+            "updated_at": _iso(issue.updated_at),
+        }
+
+    def list_issues(self, round_id: str | None = None) -> list[dict[str, Any]]:
+        round_uuid = _uuid(round_id) if round_id else None
+        with self.session_factory() as session:
+            query = select(AuditIssue).order_by(AuditIssue.created_at.desc())
+            if round_uuid:
+                query = query.where(AuditIssue.round_id == round_uuid)
+            return [self._issue_dict(item) for item in session.scalars(query)]
+
+    def get_issue(self, issue_id: str) -> dict[str, Any] | None:
+        issue_uuid = _uuid(issue_id)
+        if not issue_uuid:
+            return None
+        with self.session_factory() as session:
+            issue = session.get(AuditIssue, issue_uuid)
+            return self._issue_dict(issue) if issue else None
+
+    def update_issue(self, issue_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        issue_uuid = _uuid(issue_id)
+        if not issue_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            issue = session.get(AuditIssue, issue_uuid)
+            if not issue:
+                return None
+            before = self._issue_dict(issue)
+            for key in ("title", "description", "category_code", "severity", "affects_conclusion"):
+                if payload.get(key) is not None:
+                    setattr(issue, key, payload[key])
+            if payload.get("reason"):
+                issue.manual_reason = payload["reason"]
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="audit_issue",
+                entity_id=issue.id,
+                action_code="issue.update",
+                before_snapshot=before,
+                after_snapshot=self._issue_dict(issue),
+                reason=payload.get("reason"),
+                trace_id=payload.get("_trace_id"),
+            )
+            session.flush()
+            return self._issue_dict(issue)
+
+    def set_issue_status(
+        self,
+        issue_id: str,
+        status: str,
+        reason: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if status not in {"open", "confirmed", "rejected", "closed"}:
+            raise ValueError("invalid issue status")
+        issue_uuid = _uuid(issue_id)
+        if not issue_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            issue = session.get(AuditIssue, issue_uuid)
+            if not issue:
+                return None
+            before_status = issue.status
+            issue.status = status
+            if reason:
+                issue.manual_reason = reason
+            operation_context = context or {}
+            self._log(
+                session,
+                operator_user_id=operation_context.get("_operator_user_id"),
+                entity_type="audit_issue",
+                entity_id=issue.id,
+                action_code=f"issue.{status}",
+                before_snapshot={"status": before_status},
+                after_snapshot={"status": status},
+                reason=reason,
+                trace_id=operation_context.get("_trace_id"),
+            )
+            session.flush()
+            return self._issue_dict(issue)
+
     def record_execution_attempt(self, execution_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         execution_uuid = _uuid(execution_id)
         if not execution_uuid:
@@ -1999,6 +2090,52 @@ class SqlAlchemyStore(DemoStore):
             execution.result_payload = payload.get("output_payload")
             execution.elapsed_ms = payload.get("elapsed_ms")
             execution.attempt_count = attempt_no
+            issue_payload = (payload.get("output_payload") or {}).get("issue")
+            if issue_payload:
+                issue_code = issue_payload.get("issue_code") or f"EXEC-{str(execution.id)[:8]}"
+                issue = session.scalar(
+                    select(AuditIssue).where(
+                        AuditIssue.round_id == execution.round_id,
+                        AuditIssue.issue_code == issue_code,
+                    )
+                )
+                if not issue:
+                    version = session.get(RuleVersion, execution.rule_version_id)
+                    definition = session.get(RuleDefinition, version.rule_definition_id) if version else None
+                    issue = AuditIssue(
+                        round_id=execution.round_id,
+                        issue_code=issue_code,
+                        title=issue_payload.get("title") or (definition.rule_name if definition else "审核问题"),
+                        description=issue_payload.get("description") or "规则执行发现不符合项",
+                        category_code=issue_payload.get("category_code") or (
+                            definition.default_issue_category if definition else "technical_compliance"
+                        ),
+                        severity=issue_payload.get("severity") or (
+                            definition.default_severity if definition else "一般"
+                        ),
+                        status="open",
+                        system_conclusion=issue_payload.get("system_conclusion") or "failed",
+                        affects_conclusion=issue_payload.get("affects_conclusion", False),
+                    )
+                    session.add(issue)
+                    session.flush()
+                source = session.scalar(
+                    select(IssueSource).where(
+                        IssueSource.issue_id == issue.id,
+                        IssueSource.rule_execution_id == execution.id,
+                    )
+                )
+                if not source:
+                    session.add(
+                        IssueSource(
+                            issue_id=issue.id,
+                            source_type="rule_execution",
+                            rule_execution_id=execution.id,
+                            dynamic_item_id=execution.dynamic_item_id,
+                            source_status="active",
+                            source_payload=issue_payload,
+                        )
+                    )
             session.flush()
             return self._rule_execution_dict(session, execution)
 

@@ -1198,6 +1198,10 @@ class DemoStore:
             items = [item for item in items if item["round_id"] == round_id]
         return [deepcopy(item) for item in items]
 
+    def get_issue(self, issue_id: str) -> dict | None:
+        item = self.issues.get(issue_id)
+        return deepcopy(item) if item else None
+
     def list_model_configs(self) -> list[dict]:
         return [deepcopy(item) for item in self.model_configs.values()]
 
@@ -1369,6 +1373,43 @@ class DemoStore:
             item["result_payload"] = deepcopy(payload.get("output_payload"))
             item["elapsed_ms"] = payload.get("elapsed_ms")
             item["updated_at"] = _now()
+            issue_payload = (payload.get("output_payload") or {}).get("issue")
+            if issue_payload:
+                issue_code = issue_payload.get("issue_code") or f"EXEC-{execution_id[:8]}"
+                issue = next(
+                    (
+                        candidate for candidate in self.issues.values()
+                        if candidate["round_id"] == item["round_id"] and candidate["issue_code"] == issue_code
+                    ),
+                    None,
+                )
+                if not issue:
+                    issue_id = str(uuid4())
+                    issue = {
+                        "id": issue_id,
+                        "round_id": item["round_id"],
+                        "issue_code": issue_code,
+                        "title": issue_payload.get("title", "审核问题"),
+                        "description": issue_payload.get("description", "规则执行发现不符合项"),
+                        "category_code": issue_payload.get("category_code", "technical_compliance"),
+                        "severity": issue_payload.get("severity", "一般"),
+                        "status": "open",
+                        "system_conclusion": issue_payload.get("system_conclusion", "failed"),
+                        "manual_conclusion": None,
+                        "affects_conclusion": issue_payload.get("affects_conclusion", False),
+                        "manual_reason": None,
+                        "sources": [],
+                        "created_at": _now(),
+                        "updated_at": _now(),
+                    }
+                    self.issues[issue_id] = issue
+                if not any(source["rule_execution_id"] == execution_id for source in issue["sources"]):
+                    issue["sources"].append({
+                        "source_type": "rule_execution",
+                        "rule_execution_id": execution_id,
+                        "source_status": "active",
+                        "source_payload": deepcopy(issue_payload),
+                    })
             return deepcopy(item)
 
     def retry_rule_execution(self, execution_id: str, payload: dict) -> dict | None:
@@ -1396,7 +1437,9 @@ class DemoStore:
             issue["updated_at"] = _now()
             return deepcopy(issue)
 
-    def set_issue_status(self, issue_id: str, status: str, reason: str | None = None) -> dict | None:
+    def set_issue_status(
+        self, issue_id: str, status: str, reason: str | None = None, context: dict | None = None
+    ) -> dict | None:
         with self._lock:
             _key, issue = self._find_record(self.issues, issue_id)
             if not issue:

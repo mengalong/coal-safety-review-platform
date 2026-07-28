@@ -76,6 +76,14 @@ def _ensure_task_access(request: Request, task: dict) -> None:
         raise HTTPException(status_code=403, detail="task is assigned to another reviewer")
 
 
+def _ensure_issue_access(request: Request, issue: dict) -> None:
+    round_item = request.app.state.store.get_round(issue.get("round_id", ""))
+    task = request.app.state.store.get_task(round_item.get("task_id", "")) if round_item else None
+    if not task:
+        raise HTTPException(status_code=404, detail="issue round not found")
+    _ensure_task_access(request, task)
+
+
 def _operation_context(request: Request) -> dict[str, str]:
     return {"_operator_user_id": _current_user(request)["id"], "_trace_id": get_trace_id() or ""}
 
@@ -738,20 +746,46 @@ def create_report(payload: ReportCreateRequest, request: Request) -> JSONRespons
 
 @issues_router.get("")
 def list_issues(request: Request, round_id: str | None = None) -> dict:
-    return _ok(request.app.state.store.list_issues(round_id=round_id))
+    if round_id:
+        round_item = request.app.state.store.get_round(round_id)
+        if not round_item:
+            raise HTTPException(status_code=404, detail="round not found")
+        task = request.app.state.store.get_task(round_item.get("task_id", ""))
+        if task:
+            _ensure_task_access(request, task)
+    items = request.app.state.store.list_issues(round_id=round_id)
+    if not round_id and _current_user(request)["role"] != "admin":
+        visible = []
+        for item in items:
+            round_item = request.app.state.store.get_round(item.get("round_id", ""))
+            task = request.app.state.store.get_task(round_item.get("task_id", "")) if round_item else None
+            if task and task.get("owner_user_id") == _current_user(request)["id"]:
+                visible.append(item)
+        items = visible
+    return _ok(items)
 
 
 @issues_router.patch("/{issue_id}")
 def update_issue(issue_id: str, payload: IssueUpdateRequest, request: Request) -> dict:
-    issue = request.app.state.store.update_issue(issue_id, payload.model_dump())
+    issue = request.app.state.store.get_issue(issue_id)
     if not issue:
         raise HTTPException(status_code=404, detail="issue not found")
+    _ensure_issue_access(request, issue)
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    issue = request.app.state.store.update_issue(issue_id, data)
     return _ok(issue)
 
 
 @issues_router.post("/{issue_id}/confirm")
 def confirm_issue(issue_id: str, payload: dict, request: Request) -> dict:
-    issue = request.app.state.store.set_issue_status(issue_id, "confirmed", payload.get("reason"))
+    issue = request.app.state.store.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail="issue not found")
+    _ensure_issue_access(request, issue)
+    issue = request.app.state.store.set_issue_status(
+        issue_id, "confirmed", payload.get("reason"), _operation_context(request)
+    )
     if not issue:
         raise HTTPException(status_code=404, detail="issue not found")
     return _ok(issue)
@@ -759,7 +793,13 @@ def confirm_issue(issue_id: str, payload: dict, request: Request) -> dict:
 
 @issues_router.post("/{issue_id}/reject")
 def reject_issue(issue_id: str, payload: dict, request: Request) -> dict:
-    issue = request.app.state.store.set_issue_status(issue_id, "rejected", payload.get("reason"))
+    issue = request.app.state.store.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail="issue not found")
+    _ensure_issue_access(request, issue)
+    issue = request.app.state.store.set_issue_status(
+        issue_id, "rejected", payload.get("reason"), _operation_context(request)
+    )
     if not issue:
         raise HTTPException(status_code=404, detail="issue not found")
     return _ok(issue)

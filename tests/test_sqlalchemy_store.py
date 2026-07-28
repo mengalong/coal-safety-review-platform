@@ -116,11 +116,24 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     assert executions[0]["status"] == "pending"
     updated = store.record_execution_attempt(
         executions[0]["id"],
-        {"status": "failed", "error_payload": {"code": "TIMEOUT"}, "elapsed_ms": 900},
+        {
+            "status": "failed",
+            "error_payload": {"code": "TIMEOUT"},
+            "output_payload": {"issue": {
+                "issue_code": "MODEL-INCONSISTENT",
+                "title": "产品型号不一致",
+                "description": "说明书与图纸型号不一致",
+            }},
+            "elapsed_ms": 900,
+        },
     )
     assert updated and updated["status"] == "failed" and updated["attempt_count"] == 1
     retried = store.retry_rule_execution(executions[0]["id"], {})
     assert retried and retried["status"] == "pending" and retried["retry_count"] == 1
+    issues = store.list_issues(task["current_round_id"])
+    assert len(issues) == 1 and issues[0]["issue_code"] == "MODEL-INCONSISTENT"
+    confirmed = store.set_issue_status(issues[0]["id"], "confirmed", "证据已人工核对")
+    assert confirmed and confirmed["status"] == "confirmed"
 
 
 def test_database_store_persists_standard_catalog_and_round_snapshot(tmp_path: Path) -> None:
