@@ -2402,6 +2402,11 @@ class SqlAlchemyStore(DemoStore):
             "status": audit_run.status,
             "job_id": str(job_id) if job_id else None,
             "job_status": "queued",
+            "run_scope": (audit_run.summary or {}).get("run_scope", "full"),
+            "impact_analysis_id": (audit_run.summary or {}).get("impact_analysis_id"),
+            "summary": audit_run.summary,
+            "started_at": _iso(audit_run.started_at),
+            "finished_at": _iso(audit_run.finished_at),
             "created_at": _iso(audit_run.created_at),
             "updated_at": _iso(audit_run.updated_at),
         }

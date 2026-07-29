@@ -1297,6 +1297,10 @@ class DemoStore:
                 "job_id": str(uuid4()),
                 "job_status": "queued",
                 "created_at": _now(),
+                "run_scope": "full",
+                "started_at": None,
+                "finished_at": None,
+                "summary": None,
             }
             self.audit_runs[run_id] = run
             for round_rule in matching_round.get("rules", []):
@@ -1365,6 +1369,7 @@ class DemoStore:
                 "round_id": round_id, "run_no": sum(1 for item in self.audit_runs.values() if item["round_id"] == round_id) + 1,
                 "status": "queued", "job_id": str(uuid4()), "job_status": "queued", "created_at": _now(),
                 "impact_analysis_id": impact_id, "run_scope": "local",
+                "started_at": None, "finished_at": None, "summary": None,
             }
             self.audit_runs[run_id] = run
             for round_rule in rules:
