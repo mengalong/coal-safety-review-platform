@@ -293,7 +293,8 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/api/v1/settings/models` | 模型配置 |
-| `POST` | `/api/v1/settings/models` | 新增模型 |
+| `POST` | `/api/v1/settings/models` | 新增模型配置 |
+| `PATCH` | `/api/v1/settings/models/{config_id}` | 更新模型配置状态和运行参数 |
 | `GET` | `/api/v1/settings/issue-categories` | 问题分类 |
 | `GET` | `/api/v1/settings/report-templates` | 报告模板 |
 | `GET` | `/api/v1/settings/system-parameters` | 系统参数 |

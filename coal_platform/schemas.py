@@ -178,6 +178,13 @@ class ModelConfigRequest(BaseModel):
     concurrency_limit: int = 1
 
 
+class ModelConfigUpdateRequest(BaseModel):
+    api_key: str | None = None
+    timeout_seconds: int | None = Field(default=None, ge=1, le=3600)
+    concurrency_limit: int | None = Field(default=None, ge=1, le=100)
+    status: str | None = None
+
+
 class ReportCreateRequest(BaseModel):
     round_id: str
     report_type: str = "formal"

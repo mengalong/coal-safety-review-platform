@@ -22,6 +22,8 @@ from coal_platform.schemas import (
     LocalRerunRequest,
     LoginRequest,
     LoginResponse,
+    ModelConfigRequest,
+    ModelConfigUpdateRequest,
     ReportCreateRequest,
     RoundCreateRequest,
     RoundRuleAssemblyRequest,
@@ -1138,6 +1140,26 @@ def close_issue(issue_id: str, payload: dict, request: Request) -> dict:
 @settings_router.get("/models", dependencies=[Depends(require_admin)])
 def list_models(request: Request) -> dict:
     return _ok(request.app.state.store.list_model_configs())
+
+
+@settings_router.post("/models", dependencies=[Depends(require_admin)])
+def create_model(payload: ModelConfigRequest, request: Request) -> JSONResponse:
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    model = request.app.state.store.create_model_config(data)
+    if not model:
+        raise HTTPException(status_code=409, detail="model configuration already exists")
+    return JSONResponse(status_code=201, content=_ok(model, "model configuration created"))
+
+
+@settings_router.patch("/models/{config_id}", dependencies=[Depends(require_admin)])
+def update_model(config_id: str, payload: ModelConfigUpdateRequest, request: Request) -> dict:
+    data = payload.model_dump(exclude_unset=True)
+    data.update(_operation_context(request))
+    model = request.app.state.store.update_model_config(config_id, data)
+    if not model:
+        raise HTTPException(status_code=404, detail="model configuration not found")
+    return _ok(model)
 
 
 @settings_router.get("/system-parameters", dependencies=[Depends(require_admin)])

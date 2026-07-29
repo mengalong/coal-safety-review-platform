@@ -21,6 +21,8 @@ from coal_platform.models import (
     ExecutorVersion,
     IssueEvidence,
     IssueSource,
+    ModelConfig,
+    ModelProvider,
     OperationLog,
     QueueJob,
     Report,
@@ -1097,6 +1099,48 @@ class SqlAlchemyStore(DemoStore):
     def list_queue_jobs(self) -> list[dict[str, Any]]:
         with self.session_factory() as session:
             return [self._queue_job_dict(item) for item in session.scalars(select(QueueJob).order_by(QueueJob.created_at.desc()))]
+
+    @staticmethod
+    def _model_config_dict(session: Session, item: ModelConfig) -> dict[str, Any]:
+        provider = session.get(ModelProvider, item.provider_id)
+        return {"id": str(item.id), "provider_code": provider.provider_code if provider else None, "provider_name": provider.provider_name if provider else None, "base_url": provider.base_url if provider else None, "model_code": item.model_code, "model_kind": item.model_kind, "api_key_configured": bool(item.api_key_ciphertext), "timeout_seconds": item.timeout_seconds, "concurrency_limit": item.concurrency_limit, "status": item.status, "created_at": _iso(item.created_at), "updated_at": _iso(item.updated_at)}
+
+    def list_model_configs(self) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            return [self._model_config_dict(session, item) for item in session.scalars(select(ModelConfig).order_by(ModelConfig.created_at.desc()))]
+
+    def create_model_config(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        with self.session_factory() as session, session.begin():
+            provider = session.scalar(select(ModelProvider).where(ModelProvider.provider_code == payload["provider_code"]))
+            if not provider:
+                provider = ModelProvider(provider_code=payload["provider_code"], provider_name=payload["provider_name"], base_url=payload["base_url"], status="active")
+                session.add(provider)
+                session.flush()
+            if session.scalar(select(ModelConfig.id).where(ModelConfig.model_code == payload["model_code"], ModelConfig.provider_id == provider.id)):
+                return None
+            digest = sha256(payload["api_key"].encode()).hexdigest() if payload.get("api_key") else ""
+            item = ModelConfig(provider_id=provider.id, model_code=payload["model_code"], model_kind=payload["model_kind"], api_key_ciphertext=f"sha256:{digest}", timeout_seconds=payload.get("timeout_seconds", 60), concurrency_limit=payload.get("concurrency_limit", 1), status="active")
+            session.add(item)
+            session.flush()
+            self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="model_config", entity_id=item.id, action_code="model_config.create", after_snapshot=self._model_config_dict(session, item), trace_id=payload.get("_trace_id"))
+            return self._model_config_dict(session, item)
+
+    def update_model_config(self, config_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        config_uuid = _uuid(config_id)
+        if not config_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            item = session.get(ModelConfig, config_uuid)
+            if not item:
+                return None
+            if payload.get("api_key"):
+                item.api_key_ciphertext = f"sha256:{sha256(payload['api_key'].encode()).hexdigest()}"
+            for key in ("timeout_seconds", "concurrency_limit", "status"):
+                if payload.get(key) is not None:
+                    setattr(item, key, payload[key])
+            session.flush()
+            self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="model_config", entity_id=item.id, action_code="model_config.update", after_snapshot=self._model_config_dict(session, item), trace_id=payload.get("_trace_id"))
+            return self._model_config_dict(session, item)
 
     def get_queue_job(self, job_id: str) -> dict[str, Any] | None:
         job_uuid = _uuid(job_id)

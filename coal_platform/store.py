@@ -1363,6 +1363,27 @@ class DemoStore:
     def list_model_configs(self) -> list[dict]:
         return [deepcopy(item) for item in self.model_configs.values()]
 
+    def create_model_config(self, payload: dict) -> dict | None:
+        with self._lock:
+            if any(item.get("model_code") == payload["model_code"] for item in self.model_configs.values()):
+                return None
+            item = {"id": str(uuid4()), "provider_code": payload["provider_code"], "provider_name": payload["provider_name"], "base_url": payload["base_url"], "model_code": payload["model_code"], "model_kind": payload["model_kind"], "api_key_configured": bool(payload.get("api_key")), "status": "active", "timeout_seconds": payload.get("timeout_seconds", 60), "concurrency_limit": payload.get("concurrency_limit", 1), "created_at": _now()}
+            self.model_configs[item["id"]] = item
+            return deepcopy(item)
+
+    def update_model_config(self, config_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            item = self.model_configs.get(config_id)
+            if not item:
+                return None
+            for key in ("timeout_seconds", "concurrency_limit", "status"):
+                if payload.get(key) is not None:
+                    item[key] = payload[key]
+            if payload.get("api_key"):
+                item["api_key_configured"] = True
+            item["updated_at"] = _now()
+            return deepcopy(item)
+
     def list_system_parameters(self) -> list[dict]:
         return [deepcopy(item) for item in self.system_parameters.values()]
 

@@ -138,6 +138,32 @@ def test_first_phase_read_endpoints_return_demo_data() -> None:
             assert response.json()["data"], path
 
 
+def test_admin_can_manage_model_configuration_without_exposing_api_key() -> None:
+    with _client() as client:
+        reviewer_headers = _login(client)
+        assert client.post(
+            "/api/v1/settings/models", headers=reviewer_headers,
+            json={"provider_code": "test", "provider_name": "测试", "base_url": "https://model.test", "model_code": "demo", "model_kind": "text", "api_key": "secret"},
+        ).status_code == 403
+        admin_headers = _login(client, login_name="admin")
+        created = client.post(
+            "/api/v1/settings/models", headers=admin_headers,
+            json={"provider_code": "test", "provider_name": "测试", "base_url": "https://model.test", "model_code": "demo", "model_kind": "text", "api_key": "secret"},
+        )
+        assert created.status_code == 201
+        model = created.json()["data"]
+        assert model["api_key_configured"] is True
+        assert "api_key" not in model
+        duplicate = client.post(
+            "/api/v1/settings/models", headers=admin_headers,
+            json={"provider_code": "test", "provider_name": "测试", "base_url": "https://model.test", "model_code": "demo", "model_kind": "text", "api_key": "secret"},
+        )
+        assert duplicate.status_code == 409
+        updated = client.patch(f"/api/v1/settings/models/{model['id']}", headers=admin_headers, json={"status": "disabled"})
+        assert updated.status_code == 200
+        assert updated.json()["data"]["status"] == "disabled"
+
+
 def test_reviewer_cannot_access_admin_user_list() -> None:
     with _client() as client:
         reviewer_headers = _login(client)
