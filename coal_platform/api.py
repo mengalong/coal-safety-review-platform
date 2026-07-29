@@ -834,6 +834,31 @@ def get_report(report_id: str, request: Request) -> dict:
     return _ok(report)
 
 
+@reports_router.get("/{report_id}/artifacts")
+def list_report_artifacts(report_id: str, request: Request) -> dict:
+    report = request.app.state.store.get_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="report not found")
+    round_item = request.app.state.store.get_round(report.get("round_id", ""))
+    task = request.app.state.store.get_task(round_item.get("task_id", "")) if round_item else None
+    if not task:
+        raise HTTPException(status_code=404, detail="report round not found")
+    _ensure_task_access(request, task)
+    artifacts = []
+    for artifact_type, key, content_type in (
+        ("word", report.get("word_object_key"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        ("pdf", report.get("pdf_object_key"), "application/pdf"),
+    ):
+        if key:
+            artifacts.append({
+                "artifact_type": artifact_type,
+                "file_name": key.rsplit("/", 1)[-1],
+                "object_key": key,
+                "content_type": content_type,
+            })
+    return _ok(artifacts)
+
+
 @reports_router.post("")
 def create_report(payload: ReportCreateRequest, request: Request) -> JSONResponse:
     round_item = request.app.state.store.get_round(payload.round_id)
