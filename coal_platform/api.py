@@ -27,6 +27,7 @@ from coal_platform.schemas import (
     ManualIssueCreateRequest,
     ModelConfigRequest,
     ModelConfigUpdateRequest,
+    PasswordChangeRequest,
     ReportCreateRequest,
     ReportTemplateRequest,
     RoundCreateRequest,
@@ -153,6 +154,19 @@ def logout(request: Request) -> dict:
 @auth_router.get("/me")
 def me(user: Annotated[dict, Depends(require_user)]) -> dict:
     return _ok(user)
+
+
+@auth_router.patch("/password", dependencies=[Depends(require_user)])
+def change_password(payload: PasswordChangeRequest, request: Request) -> dict:
+    changed = request.app.state.store.change_password(
+        request.state.current_user["id"],
+        payload.current_password,
+        payload.new_password,
+        _operation_context(request),
+    )
+    if not changed:
+        raise HTTPException(status_code=400, detail="current password is incorrect or new password is unchanged")
+    return _ok(True, "password changed; all sessions revoked")
 
 
 @users_router.get("")
@@ -1268,6 +1282,17 @@ def retry_job(job_id: str, request: Request) -> dict:
     if not result:
         raise HTTPException(status_code=409, detail="queue job is not retryable")
     return _ok(result, "queue job requeued")
+
+
+@jobs_router.post("/{job_id}/cancel")
+def cancel_job(job_id: str, request: Request) -> dict:
+    store = request.app.state.store
+    if not store.get_queue_job(job_id):
+        raise HTTPException(status_code=404, detail="queue job not found")
+    result = store.cancel_queue_job(job_id, _operation_context(request))
+    if not result:
+        raise HTTPException(status_code=409, detail="queue job is not cancelable")
+    return _ok(result, "queue job canceled")
 
 
 @monitoring_router.get("")

@@ -19,6 +19,11 @@ class LoginResponse(BaseModel):
     role: str
 
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=10, max_length=128)
+
+
 class BasicInfoPayload(BaseModel):
     customer_name: str
     product_name: str

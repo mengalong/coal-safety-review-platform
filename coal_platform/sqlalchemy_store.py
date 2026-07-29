@@ -767,6 +767,45 @@ class SqlAlchemyStore(DemoStore):
             auth_session.revoked_at = datetime.now(UTC)
             return True
 
+    def change_password(
+        self,
+        user_id: str,
+        current_password: str,
+        new_password: str,
+        payload: dict[str, Any] | None = None,
+    ) -> bool:
+        user_uuid = _uuid(user_id)
+        if not user_uuid:
+            return False
+        context = payload or {}
+        with self.session_factory() as session, session.begin():
+            user = session.scalar(select(User).where(User.id == user_uuid).with_for_update())
+            if not user or not verify_password(current_password, user.password_hash) or current_password == new_password:
+                return False
+            user.password_hash = hash_password(new_password)
+            revoked_at = datetime.now(UTC)
+            active_sessions = list(
+                session.scalars(
+                    select(AuthSession).where(
+                        AuthSession.user_id == user_uuid,
+                        AuthSession.status == "active",
+                    )
+                )
+            )
+            for auth_session in active_sessions:
+                auth_session.status = "revoked"
+                auth_session.revoked_at = revoked_at
+            self._log(
+                session,
+                operator_user_id=user.id,
+                entity_type="user",
+                entity_id=user.id,
+                action_code="user.password.change",
+                after_snapshot={"sessions_revoked": len(active_sessions)},
+                trace_id=context.get("_trace_id"),
+            )
+            return True
+
     def current_user(self, user_id: str | None = None) -> dict[str, Any]:
         with self.session_factory() as session:
             query: Select[tuple[User]] = select(User)
@@ -1213,6 +1252,32 @@ class SqlAlchemyStore(DemoStore):
                 job.payload = {**(job.payload or {}), "error": payload["error"]}
             session.flush()
             return self._queue_job_dict(job)
+
+    def cancel_queue_job(self, job_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        job_uuid = _uuid(job_id)
+        if not job_uuid:
+            return None
+        context = payload or {}
+        with self.session_factory() as session, session.begin():
+            job = session.scalar(select(QueueJob).where(QueueJob.id == job_uuid).with_for_update())
+            if not job or job.status not in {"queued", "pending"}:
+                return None
+            before = self._queue_job_dict(job)
+            job.status = "canceled"
+            job.finished_at = datetime.now(UTC)
+            session.flush()
+            after = self._queue_job_dict(job)
+            self._log(
+                session,
+                operator_user_id=context.get("_operator_user_id"),
+                entity_type="queue_job",
+                entity_id=job.id,
+                action_code="queue_job.cancel",
+                before_snapshot=before,
+                after_snapshot=after,
+                trace_id=context.get("_trace_id"),
+            )
+            return after
 
     def complete_audit_run(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         run_uuid = _uuid(run_id)

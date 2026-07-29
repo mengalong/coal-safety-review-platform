@@ -10,6 +10,7 @@ from coal_platform.database import Base
 from coal_platform.main import create_app
 from coal_platform.models import (
     AuditRun,
+    AuthSession,
     ExecutorDefinition,
     ExecutorVersion,
     OperationLog,
@@ -24,6 +25,7 @@ from coal_platform.models import (
     StandardClause,
     StandardParseRevision,
     StandardVersion,
+    User,
 )
 from coal_platform.sqlalchemy_store import SqlAlchemyStore
 from coal_platform.storage import InMemoryObjectStorage
@@ -413,6 +415,65 @@ def test_database_store_persists_and_revokes_auth_session(tmp_path: Path) -> Non
     assert reloaded.is_auth_session_active(session_id, reviewer["id"])
     assert reloaded.revoke_auth_session(session_id, reviewer["id"])
     assert not store.is_auth_session_active(session_id, reviewer["id"])
+
+
+def test_database_store_changes_password_revokes_sessions_and_writes_audit_log(tmp_path: Path) -> None:
+    store, factory = _store(tmp_path / "password.db")
+    reviewer = store.authenticate("liming", DemoStore.demo_password)
+    assert reviewer
+    first_session = store.create_auth_session(reviewer["id"], datetime.now(UTC) + timedelta(hours=1))
+    second_session = store.create_auth_session(reviewer["id"], datetime.now(UTC) + timedelta(hours=1))
+
+    assert not store.change_password(reviewer["id"], "incorrect", "new-coal-password")
+    assert store.is_auth_session_active(first_session, reviewer["id"])
+    assert store.change_password(
+        reviewer["id"],
+        DemoStore.demo_password,
+        "new-coal-password",
+        {"_trace_id": "password-trace"},
+    )
+    assert not store.is_auth_session_active(first_session, reviewer["id"])
+    assert not store.is_auth_session_active(second_session, reviewer["id"])
+    assert store.authenticate("liming", DemoStore.demo_password) is None
+    assert store.authenticate("liming", "new-coal-password")
+
+    with factory() as session:
+        user = session.scalar(select(User).where(User.login_name == "liming"))
+        assert user
+        assert session.scalar(
+            select(func.count()).select_from(AuthSession).where(AuthSession.user_id == user.id, AuthSession.status == "revoked")
+        ) == 2
+        log = session.scalar(select(OperationLog).where(OperationLog.action_code == "user.password.change"))
+        assert log and log.after_snapshot == {"sessions_revoked": 2}
+        assert log.trace_id == "password-trace"
+
+
+def test_database_store_cancels_only_waiting_queue_job_and_writes_audit_log(tmp_path: Path) -> None:
+    store, factory = _store(tmp_path / "cancel-job.db")
+    admin = store.authenticate("admin", DemoStore.demo_password)
+    assert admin
+    with factory() as session, session.begin():
+        job = QueueJob(
+            job_code="TEST-CANCEL-1",
+            job_type="test",
+            queue_name="default",
+            payload={},
+            status="queued",
+        )
+        session.add(job)
+        session.flush()
+        job_id = str(job.id)
+
+    canceled = store.cancel_queue_job(job_id, {"_operator_user_id": admin["id"], "_trace_id": "cancel-trace"})
+    assert canceled and canceled["status"] == "canceled" and canceled["finished_at"]
+    assert store.cancel_queue_job(job_id, {"_operator_user_id": admin["id"]}) is None
+    assert store.retry_queue_job(job_id) is None
+
+    with factory() as session:
+        log = session.scalar(select(OperationLog).where(OperationLog.action_code == "queue_job.cancel"))
+        assert log and log.before_snapshot["status"] == "queued"
+        assert log.after_snapshot["status"] == "canceled"
+        assert log.trace_id == "cancel-trace"
 
 
 def test_database_store_api_uploads_file_and_enforces_owner_scope(tmp_path: Path) -> None:

@@ -34,6 +34,38 @@ def test_logout_revokes_current_access_token() -> None:
         assert client.get("/api/v1/auth/me", headers=other_headers).status_code == 200
 
 
+def test_password_change_revokes_all_sessions_and_replaces_password() -> None:
+    with _client() as client:
+        headers = _login(client)
+        other_headers = _login(client)
+
+        incorrect = client.patch(
+            "/api/v1/auth/password",
+            headers=headers,
+            json={"current_password": "incorrect", "new_password": "new-coal-password"},
+        )
+        assert incorrect.status_code == 400
+        assert client.get("/api/v1/auth/me", headers=headers).status_code == 200
+
+        changed = client.patch(
+            "/api/v1/auth/password",
+            headers=headers,
+            json={"current_password": DemoStore.demo_password, "new_password": "new-coal-password"},
+        )
+        assert changed.status_code == 200
+        assert changed.json()["data"] is True
+        assert client.get("/api/v1/auth/me", headers=headers).status_code == 401
+        assert client.get("/api/v1/auth/me", headers=other_headers).status_code == 401
+        assert client.post(
+            "/api/v1/auth/login",
+            json={"login_name": "liming", "password": DemoStore.demo_password},
+        ).status_code == 401
+        assert client.post(
+            "/api/v1/auth/login",
+            json={"login_name": "liming", "password": "new-coal-password"},
+        ).status_code == 200
+
+
 def test_health_and_openapi_are_available() -> None:
     with _client() as client:
         response = client.get("/api/v1/healthz", headers={"X-Trace-Id": "test-trace"})
@@ -367,6 +399,29 @@ def test_admin_can_queue_rule_test_run() -> None:
         assert completed.json()["data"]["result"]["outcome"] in {
             "passed", "failed", "unable_to_determine"
         }
+
+
+def test_admin_can_cancel_waiting_job_but_cannot_cancel_it_twice() -> None:
+    with _client() as client:
+        admin_headers = _login(client, login_name="admin")
+        reviewer_headers = _login(client)
+        rules = client.get("/api/v1/rules", headers=admin_headers).json()["data"]
+        version = next(version for rule in rules for version in rule.get("versions", []) if version["status"] == "published")
+        job = client.post(
+            f"/api/v1/rule-versions/{version['id']}/test-runs",
+            headers=admin_headers,
+            json={},
+        ).json()["data"]
+
+        assert client.post(f"/api/v1/jobs/{job['id']}/cancel", headers=reviewer_headers).status_code == 403
+        canceled = client.post(f"/api/v1/jobs/{job['id']}/cancel", headers=admin_headers)
+        assert canceled.status_code == 200
+        assert canceled.json()["data"]["status"] == "canceled"
+        assert canceled.json()["data"]["finished_at"]
+        assert client.post(f"/api/v1/jobs/{job['id']}/run", headers=admin_headers).status_code == 422
+        assert client.post(f"/api/v1/jobs/{job['id']}/retry", headers=admin_headers).status_code == 409
+        assert client.post(f"/api/v1/jobs/{job['id']}/cancel", headers=admin_headers).status_code == 409
+        assert client.post("/api/v1/jobs/not-found/cancel", headers=admin_headers).status_code == 404
 
 
 def test_standard_parse_revision_comparison_and_abolish_workflow() -> None:

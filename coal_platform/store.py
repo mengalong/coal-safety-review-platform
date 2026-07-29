@@ -98,6 +98,7 @@ class DemoStore:
     def __init__(self) -> None:
         self._lock = RLock()
         self.users: dict[str, dict] = {}
+        self._passwords: dict[str, str] = {}
         self.auth_sessions: dict[str, dict] = {}
         self.tasks: dict[str, dict] = {}
         self.audit_runs: dict[str, dict] = {}
@@ -291,11 +292,14 @@ class DemoStore:
         return True
 
     def authenticate(self, login_name: str, password: str) -> dict | None:
-        if password != self.demo_password:
-            return None
-        for user in self.users.values():
-            if user["login_name"] == login_name and user["status"] == "active":
-                return deepcopy(user)
+        with self._lock:
+            for user in self.users.values():
+                if (
+                    user["login_name"] == login_name
+                    and user["status"] == "active"
+                    and self._passwords.get(user["id"]) == password
+                ):
+                    return deepcopy(user)
         return None
 
     def get_user(self, user_id: str) -> dict | None:
@@ -334,6 +338,27 @@ class DemoStore:
             auth_session["revoked_at"] = datetime.now(UTC)
             return True
 
+    def change_password(
+        self,
+        user_id: str,
+        current_password: str,
+        new_password: str,
+        payload: dict | None = None,
+    ) -> bool:
+        del payload
+        with self._lock:
+            _key, user = self._find_record(self.users, user_id)
+            if not user or self._passwords.get(user["id"]) != current_password or current_password == new_password:
+                return False
+            self._passwords[user["id"]] = new_password
+            revoked_at = datetime.now(UTC)
+            for auth_session in self.auth_sessions.values():
+                if auth_session["user_id"] == user["id"] and auth_session["status"] == "active":
+                    auth_session["status"] = "revoked"
+                    auth_session["revoked_at"] = revoked_at
+            user["updated_at"] = revoked_at.isoformat()
+            return True
+
     def _find_record(self, collection: dict[str, dict], record_id: str) -> tuple[str, dict] | tuple[None, None]:
         if record_id in collection:
             return record_id, collection[record_id]
@@ -353,6 +378,7 @@ class DemoStore:
             "created_at": _now(),
             "updated_at": _now(),
         }
+        self._passwords[user_id] = self.demo_password
         return user_id
 
     def _executor(self, code: str, name: str, kind: str, version: str, status: str, parameter_note: str) -> dict:
@@ -1593,6 +1619,17 @@ class DemoStore:
             item["status"] = "queued" if retry_count <= 3 else "failed"
             if payload and payload.get("error"):
                 item["error"] = deepcopy(payload["error"])
+            return deepcopy(item)
+
+    def cancel_queue_job(self, job_id: str, payload: dict | None = None) -> dict | None:
+        del payload
+        with self._lock:
+            item = self.queue_jobs.get(job_id)
+            if not item or item.get("status") not in {"queued", "pending"}:
+                return None
+            item["status"] = "canceled"
+            item["finished_at"] = _now()
+            item["updated_at"] = _now()
             return deepcopy(item)
 
     def complete_audit_run(self, run_id: str, payload: dict) -> dict | None:

@@ -74,6 +74,9 @@
 2. `/auth/me` 和所有受保护接口都校验对应会话仍为 `active` 且未过期。
 3. `/auth/logout` 只撤销当前 `jti` 对应会话；同一用户的其他有效登录不受影响。
 4. 已退出令牌再次访问受保护接口返回 `401 UNAUTHORIZED`。
+5. 修改密码请求包含 `current_password` 和 `new_password`，新密码长度为 10 至 128 个字符，且不得与当前密码相同。
+6. 修改密码成功后撤销该用户全部有效 `auth_session`，包括发起请求的当前会话；用户须使用新密码重新登录。
+7. 密码及密码哈希不得写入操作日志；数据库仅记录 `user.password.change` 和撤销会话数量。
 
 ## 4. 任务与文件
 
@@ -311,6 +314,14 @@
 | `GET` | `/api/v1/monitoring` | 队列和 Worker 指标 |
 | `GET` | `/api/v1/monitoring/alerts` | 系统告警列表 |
 | `GET` | `/api/v1/logs` | 操作日志 |
+
+作业控制语义：
+
+1. 仅管理员可运行、重试和取消作业。
+2. 只有 `queued`、`pending` 状态的作业可以取消，成功后状态变为 `canceled` 并写入 `finished_at`。
+3. 已取消或已经开始、结束的作业再次取消返回 `409 CONFLICT`；不存在的作业返回 `404 NOT_FOUND`。
+4. `canceled` 是终态，Worker、手工运行和失败重试均不得再次执行该作业。
+5. 数据库存储在取消时锁定作业记录，并写入 `queue_job.cancel` 操作日志及前后状态快照。
 
 ## 12. 重要状态机
 
