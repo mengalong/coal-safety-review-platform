@@ -2532,6 +2532,47 @@ class SqlAlchemyStore(DemoStore):
                 for item in items
             ]
 
+    def decide_dynamic_item(
+        self, round_id: str, item_id: str, decision: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        if decision not in {"applicable", "not_applicable", "manual_review"}:
+            raise ValueError("invalid dynamic item decision")
+        round_uuid = _uuid(round_id)
+        item_uuid = _uuid(item_id)
+        if not round_uuid or not item_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            item = session.scalar(
+                select(DynamicAuditItem).where(DynamicAuditItem.id == item_uuid, DynamicAuditItem.round_id == round_uuid)
+            )
+            if not item:
+                return None
+            item.applicability_status = decision
+            item.manual_state = "confirmed" if decision != "manual_review" else "pending"
+            coverage = session.scalar(
+                select(RoundStandardCoverage).where(
+                    RoundStandardCoverage.round_id == round_uuid,
+                    RoundStandardCoverage.dynamic_item_id == item.id,
+                )
+            )
+            if coverage:
+                coverage.coverage_status = "to_confirm" if decision == "manual_review" else decision
+                coverage.reason = payload.get("reason")
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"), entity_type="dynamic_audit_item",
+                entity_id=item.id, action_code=f"dynamic_item.{decision}",
+                after_snapshot={"applicability_status": decision, "reason": payload.get("reason")},
+                reason=payload.get("reason"), trace_id=payload.get("_trace_id"),
+            )
+            session.flush()
+            return {
+                "id": str(item.id), "round_id": str(item.round_id), "subject_code": item.subject_code,
+                "subject_name": item.subject_name, "applicability_status": item.applicability_status,
+                "execution_mode": item.execution_mode, "manual_state": item.manual_state,
+                "manual_reason": payload.get("reason"),
+            }
+
     def list_coverage(self, round_id: str) -> dict[str, Any] | None:
         round_uuid = _uuid(round_id)
         if not round_uuid:

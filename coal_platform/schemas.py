@@ -137,6 +137,10 @@ class LocalRerunRequest(BaseModel):
     input_change: dict[str, Any] = Field(default_factory=dict)
 
 
+class DynamicItemDecisionRequest(BaseModel):
+    reason: str | None = None
+
+
 class IssueUpdateRequest(BaseModel):
     title: str | None = None
     description: str | None = None

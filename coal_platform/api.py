@@ -14,6 +14,7 @@ from coal_platform.request_context import get_trace_id
 from coal_platform.rule_engine import FIXED_AUDIT_STAGES, RuleConfigurationError
 from coal_platform.schemas import (
     BasicInfoPayload,
+    DynamicItemDecisionRequest,
     ExecutionAttemptRequest,
     IssueUpdateRequest,
     LocalRerunRequest,
@@ -356,6 +357,39 @@ def list_coverage(round_id: str, request: Request) -> dict:
         _ensure_task_access(request, task)
     coverage = request.app.state.store.list_coverage(round_id)
     return _ok(coverage or {"round_id": round_id, "summary": {}, "items": []})
+
+
+def _decide_dynamic_item(round_id: str, item_id: str, decision: str, payload: DynamicItemDecisionRequest, request: Request) -> dict:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if task:
+        _ensure_task_access(request, task)
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    try:
+        item = request.app.state.store.decide_dynamic_item(round_id, item_id, decision, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not item:
+        raise HTTPException(status_code=404, detail="dynamic item not found")
+    return _ok(item, "dynamic item updated")
+
+
+@rounds_router.post("/{round_id}/dynamic-items/{item_id}/confirm")
+def confirm_dynamic_item(round_id: str, item_id: str, payload: DynamicItemDecisionRequest, request: Request) -> dict:
+    return _decide_dynamic_item(round_id, item_id, "applicable", payload, request)
+
+
+@rounds_router.post("/{round_id}/dynamic-items/{item_id}/exclude")
+def exclude_dynamic_item(round_id: str, item_id: str, payload: DynamicItemDecisionRequest, request: Request) -> dict:
+    return _decide_dynamic_item(round_id, item_id, "not_applicable", payload, request)
+
+
+@rounds_router.post("/{round_id}/dynamic-items/{item_id}/manual")
+def manual_dynamic_item(round_id: str, item_id: str, payload: DynamicItemDecisionRequest, request: Request) -> dict:
+    return _decide_dynamic_item(round_id, item_id, "manual_review", payload, request)
 
 
 @rounds_router.post("/{round_id}/coverage/check")

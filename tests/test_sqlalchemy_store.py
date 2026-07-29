@@ -208,13 +208,29 @@ def test_database_store_persists_standard_catalog_and_round_snapshot(tmp_path: P
         {"_operator_user_id": reviewer["id"]},
     )
     assert confirmed and confirmed["status"] == "confirmed"
+    seed_version = standards[0]["versions"][0]
+    seed_selected = store.add_standard_to_round(
+        task["current_round_id"], {"standard_version_id": seed_version["id"], "_operator_user_id": reviewer["id"]}
+    )
+    assert seed_selected
+    assert store.confirm_round_standard(
+        task["current_round_id"], seed_selected["id"], {"_operator_user_id": reviewer["id"]}
+    )
+    dynamic_items = store.list_dynamic_items(task["current_round_id"])
+    assert dynamic_items
+    dynamic = store.decide_dynamic_item(
+        task["current_round_id"], dynamic_items[0]["id"], "applicable", {"reason": "条款适用"}
+    )
+    assert dynamic and dynamic["applicability_status"] == "applicable"
+    coverage = store.list_coverage(task["current_round_id"])
+    assert coverage and coverage["summary"]["applicable"] == 1
     reloaded = store.get_task(task["id"])
     assert reloaded and reloaded["rounds"][0]["standards"][0]["standard_code"] == "AQ 9999-2026"
 
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(Standard)) == 6
         assert session.scalar(select(func.count()).select_from(StandardVersion)) == 6
-        assert session.scalar(select(func.count()).select_from(RoundStandard)) == 1
+        assert session.scalar(select(func.count()).select_from(RoundStandard)) == 2
 
 
 def test_database_store_versions_parse_revisions_and_compares_clauses(tmp_path: Path) -> None:

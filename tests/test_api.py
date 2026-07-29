@@ -171,6 +171,21 @@ def test_standard_catalog_and_round_snapshot_workflow() -> None:
         )
         assert confirmed.status_code == 200
         assert confirmed.json()["data"]["status"] == "confirmed"
+        dynamic_items = client.get(
+            f"/api/v1/rounds/{task['current_round_id']}/dynamic-items", headers=headers
+        )
+        assert dynamic_items.status_code == 200
+        assert dynamic_items.json()["data"]
+        dynamic_id = dynamic_items.json()["data"][0]["id"]
+        dynamic_confirmed = client.post(
+            f"/api/v1/rounds/{task['current_round_id']}/dynamic-items/{dynamic_id}/confirm",
+            headers=headers,
+            json={"reason": "条款适用于当前产品"},
+        )
+        assert dynamic_confirmed.status_code == 200
+        assert dynamic_confirmed.json()["data"]["applicability_status"] == "applicable"
+        coverage = client.get(f"/api/v1/rounds/{task['current_round_id']}/coverage", headers=headers)
+        assert coverage.json()["data"]["summary"]["applicable"] == 1
 
         round_standards = client.get(
             f"/api/v1/rounds/{task['current_round_id']}/standards",

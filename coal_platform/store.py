@@ -103,6 +103,7 @@ class DemoStore:
         self.audit_runs: dict[str, dict] = {}
         self.rule_executions: dict[str, dict] = {}
         self.impact_analyses: dict[str, dict] = {}
+        self.dynamic_items: dict[str, dict] = {}
         self.standards: dict[str, dict] = {}
         self.standard_parse_revisions: dict[str, list[dict]] = {}
         self.rules: dict[str, dict] = {}
@@ -1631,13 +1632,14 @@ class DemoStore:
         _task, round_item = self._find_round(round_id)
         if not round_item:
             return None
-        items = []
+        items = [deepcopy(item) for item in self.dynamic_items.values() if item["round_id"] == round_id]
+        existing_ids = {item["id"] for item in items}
         for standard in round_item.get("standards", []):
             if standard.get("status") != "confirmed":
                 continue
             version = self.get_standard_version(standard.get("standard_version_id")) or {}
             for clause in version.get("latest_parse_revision", {}).get("clauses", []):
-                items.append({
+                item = {
                     "id": f"dynamic-{round_id[:8]}-{clause['id'][:8]}",
                     "round_id": round_id,
                     "source_clause": f"{standard.get('standard_code')} {clause.get('clause_code')}",
@@ -1646,11 +1648,31 @@ class DemoStore:
                     "subject_name": clause.get("title") or clause.get("clause_code"),
                     "applicability_status": "to_confirm",
                     "execution_mode": "deterministic",
-                })
+                    "manual_reason": None,
+                }
+                if item["id"] not in existing_ids:
+                    self.dynamic_items[item["id"]] = item
+                    items.append(deepcopy(item))
         return items
 
     def list_coverage(self, round_id: str) -> dict | None:
         items = self.list_dynamic_items(round_id)
         if items is None:
             return None
-        return {"round_id": round_id, "summary": {"to_confirm": len(items)}, "items": items}
+        summary: dict[str, int] = {}
+        for item in items:
+            status = item["applicability_status"]
+            summary[status] = summary.get(status, 0) + 1
+        return {"round_id": round_id, "summary": summary, "items": items}
+
+    def decide_dynamic_item(self, round_id: str, item_id: str, decision: str, payload: dict) -> dict | None:
+        if decision not in {"applicable", "not_applicable", "manual_review"}:
+            raise ValueError("invalid dynamic item decision")
+        self.list_dynamic_items(round_id)
+        item = self.dynamic_items.get(item_id)
+        if not item or item["round_id"] != round_id:
+            return None
+        item["applicability_status"] = decision
+        item["manual_state"] = "confirmed" if decision != "manual_review" else "pending"
+        item["manual_reason"] = payload.get("reason")
+        return deepcopy(item)
