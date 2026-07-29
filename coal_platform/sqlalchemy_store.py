@@ -2044,6 +2044,8 @@ class SqlAlchemyStore(DemoStore):
             executions = session.scalars(
                 select(RuleExecution).where(RuleExecution.round_id == round_uuid, RuleExecution.is_expired.is_(False))
             ).all()
+            if not executions:
+                blockers.append({"code": "NO_EXECUTION", "message": "本轮尚未创建规则执行记录"})
             pending_count = sum(item.status in {"pending", "running"} for item in executions)
             exception_count = sum(item.status in {"exception", "expired"} for item in executions)
             if pending_count:

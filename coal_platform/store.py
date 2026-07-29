@@ -1430,6 +1430,8 @@ class DemoStore:
         if pending_coverage:
             blockers.append({"code": "COVERAGE_TO_CONFIRM", "message": "标准覆盖清单仍有待确认项", "count": len(pending_coverage)})
         executions = [item for item in self.rule_executions.values() if item["round_id"] == round_id and not item.get("is_expired")]
+        if not executions:
+            blockers.append({"code": "NO_EXECUTION", "message": "本轮尚未创建规则执行记录"})
         pending = [item for item in executions if item["status"] in {"pending", "running"}]
         exceptions = [item for item in executions if item["status"] in {"exception", "expired"}]
         if pending:
