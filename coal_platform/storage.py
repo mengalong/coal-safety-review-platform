@@ -17,6 +17,8 @@ class ObjectStorage(Protocol):
 
     def delete(self, key: str) -> None: ...
 
+    def get(self, key: str) -> bytes | None: ...
+
 
 class LocalObjectStorage:
     def __init__(self, root: str | Path) -> None:
@@ -41,6 +43,15 @@ class LocalObjectStorage:
         if not target.is_relative_to(self.root):
             raise ValueError("storage key escapes configured root")
         target.unlink(missing_ok=True)
+
+    def get(self, key: str) -> bytes | None:
+        target = (self.root / key).resolve()
+        if not target.is_relative_to(self.root):
+            raise ValueError("storage key escapes configured root")
+        try:
+            return target.read_bytes()
+        except FileNotFoundError:
+            return None
 
 
 class MinioObjectStorage:
@@ -69,6 +80,19 @@ class MinioObjectStorage:
     def delete(self, key: str) -> None:
         self.client.remove_object(self.bucket, key)
 
+    def get(self, key: str) -> bytes | None:
+        try:
+            response = self.client.get_object(self.bucket, key)
+            try:
+                return response.read()
+            finally:
+                response.close()
+                response.release_conn()
+        except Exception as exc:
+            if exc.__class__.__name__ == "S3Error" and getattr(exc, "code", "") in {"NoSuchKey", "NoSuchBucket"}:
+                return None
+            raise
+
 
 class InMemoryObjectStorage:
     def __init__(self) -> None:
@@ -83,6 +107,9 @@ class InMemoryObjectStorage:
 
     def delete(self, key: str) -> None:
         self.objects.pop(key, None)
+
+    def get(self, key: str) -> bytes | None:
+        return self.objects.get(key)
 
 
 def build_object_storage(settings: Settings) -> ObjectStorage:

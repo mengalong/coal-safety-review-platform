@@ -6,7 +6,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from coal_platform.auth import access_token_expires_at, create_access_token, require_admin, require_user
@@ -857,6 +857,35 @@ def list_report_artifacts(report_id: str, request: Request) -> dict:
                 "content_type": content_type,
             })
     return _ok(artifacts)
+
+
+@reports_router.get("/{report_id}/artifacts/{artifact_type}/download")
+async def download_report_artifact(report_id: str, artifact_type: str, request: Request) -> Response:
+    report = request.app.state.store.get_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="report not found")
+    if report.get("status") != "published":
+        raise HTTPException(status_code=409, detail="report is not published")
+    round_item = request.app.state.store.get_round(report.get("round_id", ""))
+    task = request.app.state.store.get_task(round_item.get("task_id", "")) if round_item else None
+    if not task:
+        raise HTTPException(status_code=404, detail="report round not found")
+    _ensure_task_access(request, task)
+    artifact = {
+        "word": (report.get("word_object_key"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "pdf": (report.get("pdf_object_key"), "application/pdf"),
+    }.get(artifact_type)
+    if not artifact or not artifact[0]:
+        raise HTTPException(status_code=404, detail="report artifact not found")
+    content = await run_in_threadpool(request.app.state.object_storage.get, artifact[0])
+    if content is None:
+        raise HTTPException(status_code=404, detail="report artifact is not available")
+    file_name = artifact[0].rsplit("/", 1)[-1]
+    return Response(
+        content=content,
+        media_type=artifact[1],
+        headers={"Content-Disposition": f'attachment; filename="{file_name}"'},
+    )
 
 
 @reports_router.post("")
