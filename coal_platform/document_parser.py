@@ -20,6 +20,8 @@ MAX_PAGES = 1000
 MAX_BLOCKS = 10000
 MAX_BLOCK_CHARS = 100000
 MAX_OCR_PAGE_PIXELS = 40_000_000
+MAX_REGION_PIXELS = 40_000_000
+THUMBNAIL_MAX_PIXELS = 2_000_000
 
 
 class DocumentParseError(ValueError):
@@ -63,6 +65,20 @@ def _ensure_archive_limits(content: bytes) -> None:
                 raise DocumentParseError(f"document archive exceeds {MAX_EXPANDED_BYTES} expanded byte limit")
     except BadZipFile as exc:
         raise DocumentParseError("invalid OOXML document archive") from exc
+
+
+def _pdf_page_has_images(page: Any) -> bool:
+    try:
+        resources = page.get("/Resources")
+        resources = resources.get_object() if hasattr(resources, "get_object") else resources
+        xobjects = resources.get("/XObject") if resources else None
+        xobjects = xobjects.get_object() if hasattr(xobjects, "get_object") else xobjects
+        return any(
+            (item.get_object() if hasattr(item, "get_object") else item).get("/Subtype") == "/Image"
+            for item in (xobjects or {}).values()
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
 
 
 def _ocr_pdf_pages(
@@ -134,6 +150,8 @@ def _ocr_pdf_pages(
 
 def _parse_pdf(
     content: bytes,
+    file_name: str,
+    file_type: str | None = None,
     ocr_backend: OCRBackend | None = None,
     ocr_dpi: int = 200,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -153,12 +171,37 @@ def _parse_pdf(
         raise DocumentParseError(f"PDF exceeds {MAX_PAGES} page parse limit")
     blocks: list[dict[str, Any]] = []
     empty_pages: list[int] = []
+    drawing_pages: list[int] = []
+    drawing_page_details: list[dict[str, Any]] = []
+    drawing_identity = f"{file_name} {file_type or ''}".lower()
+    drawing_name = any(keyword in drawing_identity for keyword in ("图纸", "drawing", "cad", "dwg"))
     for page_no, page in enumerate(reader.pages, start=1):
         try:
             text = page.extract_text() or ""
         except Exception as exc:
             raise DocumentParseError(f"failed to extract PDF page {page_no}: {exc}") from exc
         paragraphs = [item.strip() for item in text.split("\n") if item.strip()]
+        keyword_page = any(keyword in text.lower() for keyword in ("图纸", "标题栏", "drawing", "title block", "dwg", "cad"))
+        page_width = float(page.mediabox.width)
+        page_height = float(page.mediabox.height)
+        landscape_image_page = _pdf_page_has_images(page) and page_width > page_height * 1.2
+        if drawing_name:
+            detection_method, detection_confidence = "drawing_filename", 0.95
+        elif keyword_page:
+            detection_method, detection_confidence = "drawing_text_keyword", 0.9
+        elif landscape_image_page:
+            detection_method, detection_confidence = "landscape_image_page", 0.65
+        else:
+            detection_method, detection_confidence = "not_detected", 0.0
+        if detection_confidence:
+            drawing_pages.append(page_no)
+            drawing_page_details.append(
+                {
+                    "page_no": page_no,
+                    "detection_method": detection_method,
+                    "detection_confidence": detection_confidence,
+                }
+            )
         if not paragraphs:
             empty_pages.append(page_no)
         for index, paragraph in enumerate(paragraphs, start=1):
@@ -177,7 +220,111 @@ def _parse_pdf(
         "ocr_block_count": len(ocr_blocks),
         "unresolved_ocr_pages": unresolved_pages,
         "needs_ocr": bool(unresolved_pages),
+        "drawing_pages": drawing_pages,
+        "drawing_page_count": len(drawing_pages),
+        "drawing_page_details": drawing_page_details,
     }
+
+
+def render_pdf_page_assets(
+    content: bytes,
+    drawing_page_details: list[dict[str, Any]],
+    dpi: int = 120,
+) -> list[dict[str, Any]]:
+    try:
+        document = pdfium.PdfDocument(content)
+    except Exception as exc:
+        raise DocumentParseError(f"failed to render PDF thumbnails: {exc}") from exc
+    assets: list[dict[str, Any]] = []
+    drawing_by_page = {item["page_no"]: item for item in drawing_page_details}
+    try:
+        for page_no in range(1, len(document) + 1):
+            page = document.get_page(page_no - 1)
+            bitmap = None
+            image = None
+            try:
+                page_width, page_height = page.get_size()
+                scale = dpi / 72
+                estimated_width = max(1, round(page_width * scale))
+                estimated_height = max(1, round(page_height * scale))
+                if estimated_width * estimated_height > THUMBNAIL_MAX_PIXELS:
+                    scale *= (THUMBNAIL_MAX_PIXELS / (estimated_width * estimated_height)) ** 0.5
+                bitmap = page.render(scale=scale)
+                image = bitmap.to_pil()
+                output = BytesIO()
+                image.save(output, format="PNG", optimize=True)
+                drawing = drawing_by_page.get(page_no)
+                assets.append(
+                    {
+                        "page_no": page_no,
+                        "content": output.getvalue(),
+                        "page_width": round(page_width, 3),
+                        "page_height": round(page_height, 3),
+                        "is_drawing": drawing is not None,
+                        "detection_method": drawing["detection_method"] if drawing else "not_detected",
+                        "detection_confidence": drawing["detection_confidence"] if drawing else 0.0,
+                    }
+                )
+            finally:
+                if image:
+                    image.close()
+                if bitmap:
+                    bitmap.close()
+                page.close()
+    finally:
+        document.close()
+    return assets
+
+
+def render_pdf_region(
+    content: bytes,
+    page_no: int,
+    bbox: dict[str, float],
+    dpi: int = 200,
+) -> bytes:
+    try:
+        document = pdfium.PdfDocument(content)
+        page = document.get_page(page_no - 1)
+    except Exception as exc:
+        raise DocumentParseError(f"failed to open PDF region: {exc}") from exc
+    bitmap = None
+    image = None
+    try:
+        page_width, page_height = page.get_size()
+        x = max(0.0, min(float(bbox.get("x", 0)), page_width))
+        y = max(0.0, min(float(bbox.get("y", 0)), page_height))
+        width = max(0.0, min(float(bbox.get("width", 0)), page_width - x))
+        height = max(0.0, min(float(bbox.get("height", 0)), page_height - y))
+        if width <= 0 or height <= 0:
+            raise DocumentParseError("region bbox must have positive dimensions")
+        scale = dpi / 72
+        if width * scale * height * scale > MAX_REGION_PIXELS:
+            raise DocumentParseError(f"region exceeds {MAX_REGION_PIXELS} pixel limit")
+        bitmap = page.render(scale=scale)
+        image = bitmap.to_pil()
+        crop = image.crop(
+            (
+                round(x * image.width / page_width),
+                round(y * image.height / page_height),
+                round((x + width) * image.width / page_width),
+                round((y + height) * image.height / page_height),
+            )
+        )
+        output = BytesIO()
+        crop.save(output, format="PNG", optimize=True)
+        crop.close()
+        return output.getvalue()
+    except DocumentParseError:
+        raise
+    except Exception as exc:
+        raise DocumentParseError(f"failed to crop PDF region: {exc}") from exc
+    finally:
+        if image:
+            image.close()
+        if bitmap:
+            bitmap.close()
+        page.close()
+        document.close()
 
 
 def _parse_docx(content: bytes) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -269,7 +416,7 @@ def parse_document(
     suffix = Path(file_name).suffix.lower()
     kind = suffix.lstrip(".") or (file_type or "").lower()
     if kind == "pdf":
-        blocks, summary = _parse_pdf(content, ocr_backend, ocr_dpi)
+        blocks, summary = _parse_pdf(content, file_name, file_type, ocr_backend, ocr_dpi)
     elif kind == "docx":
         blocks, summary = _parse_docx(content)
     elif kind in {"xlsx", "xlsm"}:
@@ -280,8 +427,14 @@ def parse_document(
         raise DocumentParseError(f"unsupported document type: {kind or 'unknown'}")
     _ensure_limits(content, blocks)
     character_count = sum(len(item["content_text"]) for item in blocks)
+    page_assets = (
+        render_pdf_page_assets(content, summary["drawing_page_details"])
+        if kind == "pdf"
+        else []
+    )
     return {
         "blocks": blocks,
+        "page_assets": page_assets,
         "summary": {
             **summary,
             "file_type": kind,

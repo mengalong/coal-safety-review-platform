@@ -86,6 +86,11 @@ def test_parse_pdf_extracts_text_and_marks_blank_pages_for_ocr() -> None:
     assert blank["summary"]["needs_ocr"] is True
     assert blank["summary"]["empty_text_pages"] == [1]
 
+    drawing = parse_document(text_pdf, "product-drawing.pdf")
+    assert drawing["summary"]["drawing_pages"] == [1]
+    assert drawing["page_assets"][0]["is_drawing"] is True
+    assert drawing["page_assets"][0]["content"].startswith(b"\x89PNG")
+
 
 def test_parse_pdf_uses_ocr_for_blank_page_and_converts_bbox_to_pdf_points() -> None:
     writer = PdfWriter()

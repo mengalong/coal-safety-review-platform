@@ -29,6 +29,7 @@ from coal_platform.models import (
     StandardVersion,
     User,
 )
+from coal_platform.report_renderer import render_pdf
 from coal_platform.sqlalchemy_store import SqlAlchemyStore
 from coal_platform.storage import InMemoryObjectStorage
 from coal_platform.store import DemoStore
@@ -136,6 +137,43 @@ def test_database_store_persists_document_parse_blocks_and_audit_log(tmp_path: P
         assert session.scalar(select(func.count()).select_from(ParsedBlock)) == 2
         actions = set(session.scalars(select(OperationLog.action_code)))
         assert {"task_file.parse.queue", "task_file.parse.complete"} <= actions
+
+
+def test_database_store_persists_pdf_page_assets_in_object_storage(tmp_path: Path) -> None:
+    store, _factory = _store(tmp_path / "pdf-pages.db")
+    storage = InMemoryObjectStorage()
+    reviewer = store.authenticate("liming", DemoStore.demo_password)
+    assert reviewer
+    task = store.create_task({"owner_user_id": reviewer["id"], "_operator_user_id": reviewer["id"]})
+    content = render_pdf({"title": "Product drawing", "task": {"task_no": "DRAWING-001"}})
+    storage_key = f"tasks/{task['id']}/product-drawing.pdf"
+    files = store.add_task_files(
+        task["id"],
+        [
+            {
+                "file_name": "product-drawing.pdf",
+                "file_type": "pdf",
+                "content_type": "application/pdf",
+                "file_size": len(content),
+                "sha256": "e" * 64,
+                "storage_key": storage_key,
+                "_operator_user_id": reviewer["id"],
+            }
+        ],
+    )
+    assert files
+    storage.put(storage_key, content, "application/pdf")
+    job = store.create_task_file_parse_job(task["id"], files[0]["id"], {})
+    assert job
+
+    completed = process_queue_job(store, job["id"], storage)
+
+    assert completed and completed["status"] == "succeeded"
+    pages = store.list_task_file_pages(task["id"], files[0]["id"])
+    assert pages and pages[0]["is_drawing"] is True
+    assert pages[0]["detection_method"] == "drawing_filename"
+    assert pages[0]["detection_confidence"] == 0.95
+    assert storage.get(pages[0]["thumbnail_storage_key"]).startswith(b"\x89PNG")
 
 
 def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:

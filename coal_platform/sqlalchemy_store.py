@@ -2111,6 +2111,7 @@ class SqlAlchemyStore(DemoStore):
                     "file_name": file_item.original_name,
                     "file_type": file_item.file_type,
                     "version_no": file_item.version_no,
+                    "page_assets": (file_item.parse_summary or {}).get("page_assets", []),
                     "operator_user_id": payload.get("_operator_user_id"),
                     "trace_id": payload.get("_trace_id"),
                 },
@@ -2152,6 +2153,7 @@ class SqlAlchemyStore(DemoStore):
         blocks: list[dict[str, Any]],
         summary: dict[str, Any],
         payload: dict[str, Any] | None = None,
+        page_assets: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         file_uuid = _uuid(file_id)
         if not file_uuid:
@@ -2180,7 +2182,12 @@ class SqlAlchemyStore(DemoStore):
                 ]
             )
             retry_count = (file_item.parse_summary or {}).get("retry_count", 0)
-            file_item.parse_summary = {**summary, "retry_count": retry_count, "parsed_at": datetime.now(UTC).isoformat()}
+            file_item.parse_summary = {
+                **summary,
+                "page_assets": page_assets or [],
+                "retry_count": retry_count,
+                "parsed_at": datetime.now(UTC).isoformat(),
+            }
             file_item.status = "parsed"
             self._log(
                 session,
@@ -2256,6 +2263,16 @@ class SqlAlchemyStore(DemoStore):
                 .order_by(ParsedBlock.page_no, ParsedBlock.created_at)
             )
             return [self._parsed_block_dict(item) for item in blocks]
+
+    def list_task_file_pages(self, task_id: str, file_id: str) -> list[dict[str, Any]] | None:
+        task_uuid, file_uuid = _uuid(task_id), _uuid(file_id)
+        if not task_uuid or not file_uuid:
+            return None
+        with self.session_factory() as session:
+            file_item = session.get(TaskFile, file_uuid)
+            if not file_item or file_item.task_id != task_uuid or file_item.status == "deleted":
+                return None
+            return list((file_item.parse_summary or {}).get("page_assets", []))
 
     def _mutate_task_file(self, task_id: str, file_id: str, payload: dict[str, Any], action_code: str) -> dict[str, Any] | None:
         task_uuid, file_uuid = _uuid(task_id), _uuid(file_id)

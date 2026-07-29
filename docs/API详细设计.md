@@ -126,6 +126,9 @@
 | `DELETE` | `/api/v1/tasks/{task_id}/files/{file_id}` | 软删除文件并保留审计记录 |
 | `POST` | `/api/v1/tasks/{task_id}/files/{file_id}/retry-parse` | 重试解析 |
 | `GET` | `/api/v1/tasks/{task_id}/files/{file_id}/blocks` | 查询解析证据块 |
+| `GET` | `/api/v1/tasks/{task_id}/files/{file_id}/pages` | 查询页面和缩略图元数据 |
+| `GET` | `/api/v1/tasks/{task_id}/files/{file_id}/pages/{page_no}/thumbnail` | 获取页面缩略图 |
+| `GET` | `/api/v1/tasks/{task_id}/files/{file_id}/pages/{page_no}/region` | 获取 PDF 区域证据图 |
 | `POST` | `/api/v1/tasks/{task_id}/files/{file_id}/mark-unavailable` | 标记无法解析继续 |
 
 上传响应：
@@ -147,6 +150,12 @@
 6. 上传入口直接拒绝超过 50 MiB 的单文件；DOCX/XLSX 解压后最大 200 MiB、归档条目最大 10000 个；PDF/工作表最大 1000 页，解析块最大 10000 个，单块文本最大 100000 字符。
 7. OCR 块使用 `ocr_line` 类型，`confidence` 为 `0..1`；`bbox` 使用 PDF 点坐标，包含 `x`、`y`、`width`、`height`、`page_width`、`page_height` 和 `unit=pt`。
 8. OCR 单页渲染最多 4000 万像素，DPI 允许 `72..600`，单页识别超时允许 `1..600` 秒；超限或 OCR 异常进入 `parse_failed` 并保留错误信息。
+
+页面资产语义：
+
+1. PDF 每页生成 PNG 缩略图并写入对象存储，页面元数据保存在 `parse_summary.page_assets`，包含页码、尺寸、缩略图对象键和图纸识别结果。
+2. 图纸页识别使用文件名、页面文字关键词和横向大幅面图像启发式，返回 `detection_method` 与 `detection_confidence`；这只是召回信号，不替代人工确认或多模态判断。
+3. 区域接口接收 PDF 点坐标 `x,y,width,height`，从原始 PDF 重新渲染裁剪，返回 `image/png`；单次裁剪最多 4000 万像素。页面和区域接口都执行任务负责人权限校验。
 
 ## 5. 轮次与标准
 

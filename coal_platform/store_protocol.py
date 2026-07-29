@@ -63,6 +63,7 @@ class PlatformStore(Protocol):
         blocks: list[dict[str, Any]],
         summary: dict[str, Any],
         payload: dict[str, Any] | None = None,
+        page_assets: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None: ...
 
     def fail_task_file_parse(
@@ -70,6 +71,8 @@ class PlatformStore(Protocol):
     ) -> dict[str, Any] | None: ...
 
     def list_task_file_blocks(self, task_id: str, file_id: str) -> list[dict[str, Any]] | None: ...
+
+    def list_task_file_pages(self, task_id: str, file_id: str) -> list[dict[str, Any]] | None: ...
 
     def create_round(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any] | None: ...
 

@@ -788,6 +788,7 @@ class DemoStore:
                     "file_name": file_item["file_name"],
                     "file_type": file_item.get("file_type"),
                     "version_no": file_item.get("version_no", 1),
+                    "page_assets": deepcopy((file_item.get("parse_summary") or {}).get("page_assets", [])),
                     "operator_user_id": payload.get("_operator_user_id"),
                     "trace_id": payload.get("_trace_id"),
                 },
@@ -814,6 +815,7 @@ class DemoStore:
         blocks: list[dict],
         summary: dict,
         payload: dict | None = None,
+        page_assets: list[dict] | None = None,
     ) -> dict | None:
         with self._lock:
             for task in self.tasks.values():
@@ -826,7 +828,12 @@ class DemoStore:
                     {"id": str(uuid4()), "file_id": file_id, **deepcopy(block)} for block in blocks
                 ]
                 retry_count = (file_item.get("parse_summary") or {}).get("retry_count", 0)
-                file_item["parse_summary"] = {**deepcopy(summary), "retry_count": retry_count, "parsed_at": _now()}
+                file_item["parse_summary"] = {
+                    **deepcopy(summary),
+                    "page_assets": deepcopy(page_assets or []),
+                    "retry_count": retry_count,
+                    "parsed_at": _now(),
+                }
                 file_item["status"] = "parsed"
                 return deepcopy(file_item)
         return None
@@ -852,6 +859,12 @@ class DemoStore:
         if not file_item or file_item.get("status") == "deleted":
             return None
         return deepcopy(self.parsed_blocks.get(file_id, []))
+
+    def list_task_file_pages(self, task_id: str, file_id: str) -> list[dict] | None:
+        _task, file_item = self._find_task_file(task_id, file_id)
+        if not file_item or file_item.get("status") == "deleted":
+            return None
+        return deepcopy((file_item.get("parse_summary") or {}).get("page_assets", []))
 
     def retry_task_file_parse(self, task_id: str, file_id: str, payload: dict) -> dict | None:
         with self._lock:

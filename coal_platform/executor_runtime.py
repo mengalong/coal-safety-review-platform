@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from time import monotonic
@@ -9,6 +10,8 @@ from coal_platform.document_parser import parse_document
 from coal_platform.ocr import OCRBackend
 from coal_platform.storage import ObjectStorage
 from coal_platform.store_protocol import PlatformStore
+
+logger = logging.getLogger(__name__)
 
 
 def _issue(rule: Mapping[str, Any], description: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -105,6 +108,7 @@ def process_queue_job(
     if job["status"] not in {"queued", "pending"}:
         raise ValueError("queue job is not runnable")
     store.update_queue_job(job_id, {"status": "running"})
+    created_asset_keys: set[str] = set()
     try:
         if job["job_type"] == "document_parse":
             payload = job["payload"]
@@ -128,7 +132,32 @@ def process_queue_job(
                 ocr_backend,
                 ocr_dpi,
             )
-            completed = store.complete_task_file_parse(file_id, parsed["blocks"], parsed["summary"], context)
+            page_assets = []
+            current_asset_keys: set[str] = set()
+            for asset in parsed.get("page_assets", []):
+                asset_key = f"{payload['storage_key']}.pages/{asset['page_no']:04d}.png"
+                object_storage.put(asset_key, asset["content"], "image/png")
+                created_asset_keys.add(asset_key)
+                current_asset_keys.add(asset_key)
+                page_assets.append(
+                    {
+                        key: value
+                        for key, value in asset.items()
+                        if key != "content"
+                    }
+                    | {"thumbnail_storage_key": asset_key}
+                )
+            for old_asset in payload.get("page_assets", []):
+                old_key = old_asset.get("thumbnail_storage_key")
+                if old_key and old_key not in current_asset_keys:
+                    object_storage.delete(old_key)
+            completed = store.complete_task_file_parse(
+                file_id,
+                parsed["blocks"],
+                parsed["summary"],
+                context,
+                page_assets,
+            )
             if not completed:
                 raise ValueError("task file parse result could not be saved")
             return store.update_queue_job(job_id, {"status": "succeeded", "result": parsed["summary"]})
@@ -162,6 +191,12 @@ def process_queue_job(
     except Exception as exc:
         if job["job_type"] == "document_parse":
             payload = job.get("payload") or {}
+            if object_storage:
+                for asset_key in created_asset_keys:
+                    try:
+                        object_storage.delete(asset_key)
+                    except Exception:
+                        logger.warning("failed to clean up OCR page asset %s", asset_key, exc_info=True)
             store.fail_task_file_parse(
                 payload.get("file_id", ""),
                 {"code": "DOCUMENT_PARSE_FAILED", "message": str(exc)},

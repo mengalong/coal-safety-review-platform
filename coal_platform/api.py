@@ -5,13 +5,13 @@ from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from coal_platform.auth import access_token_expires_at, create_access_token, require_admin, require_user
 from coal_platform.config import get_settings
-from coal_platform.document_parser import MAX_FILE_BYTES
+from coal_platform.document_parser import MAX_FILE_BYTES, DocumentParseError, render_pdf_region
 from coal_platform.executor_runtime import process_queue_job, run_rule_execution
 from coal_platform.report_renderer import render_docx, render_pdf
 from coal_platform.request_context import get_trace_id
@@ -349,6 +349,9 @@ async def replace_file(task_id: str, file_id: str, request: Request, file: Annot
     old_key = old_file.get("storage_key")
     if old_key and old_key != storage_key:
         await run_in_threadpool(request.app.state.object_storage.delete, old_key)
+    for asset in (old_file.get("parse_summary") or {}).get("page_assets", []):
+        if asset.get("thumbnail_storage_key"):
+            await run_in_threadpool(request.app.state.object_storage.delete, asset["thumbnail_storage_key"])
     parse_job = _queue_file_parse(request, task_id, file_id)
     if parse_job:
         updated["parse_job"] = parse_job
@@ -356,15 +359,19 @@ async def replace_file(task_id: str, file_id: str, request: Request, file: Annot
 
 
 @tasks_router.delete("/{task_id}/files/{file_id}")
-def delete_file(task_id: str, file_id: str, request: Request) -> dict:
+async def delete_file(task_id: str, file_id: str, request: Request) -> dict:
     store = request.app.state.store
     task = store.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="task not found")
     _ensure_task_access(request, task)
+    old_file = next((item for item in task.get("files", []) if item.get("id") == file_id), None)
     deleted = store.delete_task_file(task_id, file_id, _operation_context(request))
     if not deleted:
         raise HTTPException(status_code=404, detail="file not found")
+    for asset in (old_file or {}).get("parse_summary", {}).get("page_assets", []):
+        if asset.get("thumbnail_storage_key"):
+            await run_in_threadpool(request.app.state.object_storage.delete, asset["thumbnail_storage_key"])
     return _ok(deleted)
 
 
@@ -395,6 +402,74 @@ def list_file_blocks(task_id: str, file_id: str, request: Request) -> dict:
     if blocks is None:
         raise HTTPException(status_code=404, detail="file not found")
     return _ok(blocks)
+
+
+@tasks_router.get("/{task_id}/files/{file_id}/pages")
+def list_file_pages(task_id: str, file_id: str, request: Request) -> dict:
+    store = request.app.state.store
+    task = store.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    pages = store.list_task_file_pages(task_id, file_id)
+    if pages is None:
+        raise HTTPException(status_code=404, detail="file not found")
+    return _ok(pages)
+
+
+@tasks_router.get("/{task_id}/files/{file_id}/pages/{page_no}/thumbnail")
+def get_file_thumbnail(task_id: str, file_id: str, page_no: int, request: Request) -> Response:
+    task = request.app.state.store.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    page_assets = request.app.state.store.list_task_file_pages(task_id, file_id)
+    asset = next((item for item in page_assets or [] if item.get("page_no") == page_no), None)
+    if not asset or not asset.get("thumbnail_storage_key"):
+        raise HTTPException(status_code=404, detail="page thumbnail not found")
+    content = request.app.state.object_storage.get(asset["thumbnail_storage_key"])
+    if content is None:
+        raise HTTPException(status_code=404, detail="page thumbnail object not found")
+    return Response(content=content, media_type="image/png")
+
+
+@tasks_router.get("/{task_id}/files/{file_id}/pages/{page_no}/region")
+def get_file_region(
+    task_id: str,
+    file_id: str,
+    page_no: int,
+    request: Request,
+    x: float = Query(ge=0),
+    y: float = Query(ge=0),
+    width: float = Query(gt=0),
+    height: float = Query(gt=0),
+) -> Response:
+    task = request.app.state.store.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    page_assets = request.app.state.store.list_task_file_pages(task_id, file_id)
+    asset = next((item for item in page_assets or [] if item.get("page_no") == page_no), None)
+    if not asset:
+        raise HTTPException(status_code=404, detail="page not found")
+    file_item = next((item for item in task.get("files", []) if item.get("id") == file_id), None)
+    is_pdf = bool(
+        file_item
+        and (
+            Path(file_item.get("file_name", "")).suffix.lower() == ".pdf"
+            or file_item.get("content_type") == "application/pdf"
+        )
+    )
+    if not is_pdf:
+        raise HTTPException(status_code=409, detail="region evidence is only available for PDF files")
+    content = request.app.state.object_storage.get(file_item["storage_key"])
+    if content is None:
+        raise HTTPException(status_code=404, detail="source PDF object not found")
+    try:
+        region = render_pdf_region(content, page_no, {"x": x, "y": y, "width": width, "height": height})
+    except DocumentParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return Response(content=region, media_type="image/png")
 
 
 @rounds_router.get("/{round_id}")

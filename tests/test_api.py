@@ -211,6 +211,25 @@ def test_scanned_pdf_ocr_blocks_include_page_bbox_and_confidence() -> None:
         assert blocks[0]["content_text"] == "防爆标志 Ex db I Mb"
         assert blocks[0]["confidence"] == 0.95
         assert blocks[0]["bbox"]["unit"] == "pt"
+        pages = client.get(
+            f"/api/v1/tasks/{task['id']}/files/{file_item['id']}/pages",
+            headers=headers,
+        )
+        assert pages.status_code == 200
+        assert pages.json()["data"][0]["thumbnail_storage_key"]
+        thumbnail = client.get(
+            f"/api/v1/tasks/{task['id']}/files/{file_item['id']}/pages/1/thumbnail",
+            headers=headers,
+        )
+        assert thumbnail.status_code == 200
+        assert thumbnail.headers["content-type"] == "image/png"
+        region = client.get(
+            f"/api/v1/tasks/{task['id']}/files/{file_item['id']}/pages/1/region",
+            headers=headers,
+            params={"x": 0, "y": 0, "width": 100, "height": 50},
+        )
+        assert region.status_code == 200
+        assert region.headers["content-type"] == "image/png"
 
 
 def test_document_parse_failure_is_visible_and_retryable() -> None:
