@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -174,6 +174,18 @@ class ManualIssueCreateRequest(BaseModel):
 class PageRequest(BaseModel):
     page: int = 1
     page_size: int = 20
+
+
+class ParsedBlockUpdateRequest(BaseModel):
+    content_text: str | None = None
+    block_type: str | None = None
+    bbox: dict[str, Any] | None = None
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ParseReviewRequest(BaseModel):
+    decision: Literal['accepted', 'reparse']
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class StandardRelationPayload(BaseModel):

@@ -29,6 +29,8 @@ from coal_platform.schemas import (
     ManualIssueCreateRequest,
     ModelConfigRequest,
     ModelConfigUpdateRequest,
+    ParsedBlockUpdateRequest,
+    ParseReviewRequest,
     PasswordChangeRequest,
     ReportCreateRequest,
     ReportTemplateRequest,
@@ -403,6 +405,39 @@ def list_file_blocks(task_id: str, file_id: str, request: Request) -> dict:
     if blocks is None:
         raise HTTPException(status_code=404, detail="file not found")
     return _ok(blocks)
+
+
+@tasks_router.patch("/{task_id}/files/{file_id}/blocks/{block_id}")
+def update_file_block(task_id: str, file_id: str, block_id: str, payload: ParsedBlockUpdateRequest, request: Request) -> dict:
+    task = request.app.state.store.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    data = payload.model_dump(exclude_unset=True)
+    data.update(_operation_context(request))
+    block = request.app.state.store.update_task_file_block(task_id, file_id, block_id, data)
+    if not block:
+        raise HTTPException(status_code=409, detail="parsed block is not editable")
+    return _ok(block, "parsed block revised")
+
+
+@tasks_router.post("/{task_id}/files/{file_id}/parse-review")
+def review_file_parse(task_id: str, file_id: str, payload: ParseReviewRequest, request: Request) -> dict:
+    task = request.app.state.store.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    reviewed = request.app.state.store.review_task_file_parse(task_id, file_id, data)
+    if not reviewed:
+        raise HTTPException(status_code=409, detail="file parse is not reviewable")
+    if payload.decision == "reparse":
+        retried = request.app.state.store.retry_task_file_parse(task_id, file_id, _operation_context(request))
+        job = _queue_file_parse(request, task_id, file_id)
+        if retried and job:
+            reviewed = {**retried, "parse_job": job}
+    return _ok(reviewed, "parse review recorded")
 
 
 @tasks_router.get("/{task_id}/files/{file_id}/pages")

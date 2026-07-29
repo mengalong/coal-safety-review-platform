@@ -158,11 +158,15 @@ def test_database_store_persists_document_parse_blocks_and_audit_log(tmp_path: P
     assert completed and completed["status"] == "succeeded"
     blocks = store.list_task_file_blocks(task["id"], files[0]["id"])
     assert blocks and [item["content_text"] for item in blocks] == ["Model: DSJ80/40/2x75", "Power: 75 kW"]
+    revised = store.update_task_file_block(task["id"], files[0]["id"], blocks[0]["id"], {"content_text": "Model: DSJ80/40/2x90", "reason": "人工核对", "_operator_user_id": reviewer["id"], "_trace_id": "document-parse"})
+    assert revised and revised["confidence"] == 1.0
+    reviewed = store.review_task_file_parse(task["id"], files[0]["id"], {"decision": "accepted", "reason": "复核通过", "_operator_user_id": reviewer["id"], "_trace_id": "document-parse"})
+    assert reviewed and reviewed["parse_summary"]["quality_review"]["status"] == "accepted"
 
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(ParsedBlock)) == 2
         actions = set(session.scalars(select(OperationLog.action_code)))
-        assert {"task_file.parse.queue", "task_file.parse.complete"} <= actions
+        assert {"task_file.parse.queue", "task_file.parse.complete", "parsed_block.manual_revision", "task_file.parse_review.accepted"} <= actions
 
 
 def test_database_store_persists_pdf_page_assets_in_object_storage(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ from hashlib import sha256
 from threading import RLock
 from uuid import uuid4
 
+from coal_platform.parse_quality import evaluate_parse_quality
 from coal_platform.rule_engine import (
     DEFAULT_RULE_PACKS,
     DEFAULT_RULE_STAGE_BY_CODE,
@@ -830,8 +831,11 @@ class DemoStore:
                     {"id": str(uuid4()), "file_id": file_id, **deepcopy(block)} for block in blocks
                 ]
                 retry_count = (file_item.get("parse_summary") or {}).get("retry_count", 0)
+                quality_metrics = evaluate_parse_quality(blocks, summary)
                 file_item["parse_summary"] = {
                     **deepcopy(summary),
+                    "quality_metrics": quality_metrics,
+                    "quality_review": {"status": "pending" if quality_metrics["review_required"] else "not_required"},
                     "page_assets": deepcopy(page_assets or []),
                     "retry_count": retry_count,
                     "parsed_at": _now(),
@@ -861,6 +865,34 @@ class DemoStore:
         if not file_item or file_item.get("status") == "deleted":
             return None
         return deepcopy(self.parsed_blocks.get(file_id, []))
+
+    def update_task_file_block(self, task_id: str, file_id: str, block_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            _task, file_item = self._find_task_file(task_id, file_id)
+            blocks = self.parsed_blocks.get(file_id, [])
+            block = next((item for item in blocks if item["id"] == block_id), None)
+            if not file_item or file_item.get("status") != "parsed" or not block:
+                return None
+            for key in ("content_text", "block_type", "bbox"):
+                if key in payload:
+                    block[key] = deepcopy(payload[key])
+            block["confidence"] = 1.0
+            summary = dict(file_item.get("parse_summary") or {})
+            summary["quality_metrics"] = evaluate_parse_quality(blocks, summary)
+            summary["manual_revision_count"] = int(summary.get("manual_revision_count", 0)) + 1
+            summary["quality_review"] = {"status": "pending", "reason": "block_revised"}
+            file_item["parse_summary"] = summary
+            return deepcopy(block)
+
+    def review_task_file_parse(self, task_id: str, file_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            _task, file_item = self._find_task_file(task_id, file_id)
+            if not file_item or file_item.get("status") != "parsed":
+                return None
+            summary = dict(file_item.get("parse_summary") or {})
+            summary["quality_review"] = {"status": payload["decision"], "reason": payload.get("reason"), "reviewed_at": _now(), "reviewer_user_id": payload.get("_operator_user_id")}
+            file_item["parse_summary"] = summary
+            return deepcopy(file_item)
 
     def list_task_file_pages(self, task_id: str, file_id: str) -> list[dict] | None:
         _task, file_item = self._find_task_file(task_id, file_id)

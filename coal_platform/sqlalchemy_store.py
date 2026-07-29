@@ -49,6 +49,7 @@ from coal_platform.models import (
     TaskFile,
     User,
 )
+from coal_platform.parse_quality import evaluate_parse_quality
 from coal_platform.rule_engine import (
     DEFAULT_RULE_PACKS,
     DEFAULT_RULE_STAGE_BY_CODE,
@@ -2209,8 +2210,11 @@ class SqlAlchemyStore(DemoStore):
                 ]
             )
             retry_count = (file_item.parse_summary or {}).get("retry_count", 0)
+            quality_metrics = evaluate_parse_quality(blocks, summary)
             file_item.parse_summary = {
                 **summary,
+                "quality_metrics": quality_metrics,
+                "quality_review": {"status": "pending" if quality_metrics["review_required"] else "not_required"},
                 "page_assets": page_assets or [],
                 "retry_count": retry_count,
                 "parsed_at": datetime.now(UTC).isoformat(),
@@ -2290,6 +2294,47 @@ class SqlAlchemyStore(DemoStore):
                 .order_by(ParsedBlock.page_no, ParsedBlock.created_at)
             )
             return [self._parsed_block_dict(item) for item in blocks]
+
+    def update_task_file_block(self, task_id: str, file_id: str, block_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        task_uuid, file_uuid, block_uuid = _uuid(task_id), _uuid(file_id), _uuid(block_id)
+        if not task_uuid or not file_uuid or not block_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            file_item = session.get(TaskFile, file_uuid)
+            block = session.get(ParsedBlock, block_uuid)
+            if not file_item or file_item.task_id != task_uuid or not block or block.file_id != file_uuid or file_item.status != "parsed":
+                return None
+            before = self._parsed_block_dict(block)
+            for key in ("content_text", "block_type", "bbox"):
+                if key in payload:
+                    setattr(block, key, payload[key])
+            block.confidence = 1.0
+            blocks = session.scalars(select(ParsedBlock).where(ParsedBlock.file_id == file_uuid)).all()
+            block_payloads = [self._parsed_block_dict(item) for item in blocks]
+            summary = dict(file_item.parse_summary or {})
+            summary["quality_metrics"] = evaluate_parse_quality(block_payloads, summary)
+            summary["manual_revision_count"] = int(summary.get("manual_revision_count", 0)) + 1
+            summary["quality_review"] = {"status": "pending", "reason": "block_revised"}
+            file_item.parse_summary = summary
+            session.flush()
+            after = self._parsed_block_dict(block)
+            self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="parsed_block", entity_id=block.id, action_code="parsed_block.manual_revision", before_snapshot=before, after_snapshot=after, reason=payload.get("reason"), trace_id=payload.get("_trace_id"))
+            return after
+
+    def review_task_file_parse(self, task_id: str, file_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        task_uuid, file_uuid = _uuid(task_id), _uuid(file_id)
+        if not task_uuid or not file_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            file_item = session.get(TaskFile, file_uuid)
+            if not file_item or file_item.task_id != task_uuid or file_item.status != "parsed":
+                return None
+            summary = dict(file_item.parse_summary or {})
+            summary["quality_review"] = {"status": payload["decision"], "reason": payload.get("reason"), "reviewed_at": datetime.now(UTC).isoformat(), "reviewer_user_id": payload.get("_operator_user_id")}
+            file_item.parse_summary = summary
+            self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="task_file", entity_id=file_item.id, action_code=f"task_file.parse_review.{payload['decision']}", after_snapshot={"quality_review": summary["quality_review"]}, reason=payload.get("reason"), trace_id=payload.get("_trace_id"))
+            session.flush()
+            return self._file_dict(file_item)
 
     def list_task_file_pages(self, task_id: str, file_id: str) -> list[dict[str, Any]] | None:
         task_uuid, file_uuid = _uuid(task_id), _uuid(file_id)

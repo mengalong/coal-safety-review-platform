@@ -173,14 +173,30 @@ def test_uploaded_document_can_be_parsed_and_queried_as_evidence_blocks() -> Non
         parsed_file = next(item for item in detail["files"] if item["id"] == file_item["id"])
         assert parsed_file["status"] == "parsed"
         assert parsed_file["parse_summary"]["parser"] == "python-docx"
+        assert parsed_file["parse_summary"]["quality_metrics"]["quality_score"] == 1.0
 
         blocks = client.get(
             f"/api/v1/tasks/{task['id']}/files/{file_item['id']}/blocks",
             headers=headers,
         )
         assert blocks.status_code == 200
-        assert blocks.json()["data"][0]["content_text"] == "Product model: KBZ-500/1140"
-        assert blocks.json()["data"][0]["source_ref"] == "docx:paragraph:1"
+        block = blocks.json()["data"][0]
+        assert block["content_text"] == "Product model: KBZ-500/1140"
+        assert block["source_ref"] == "docx:paragraph:1"
+        revised = client.patch(
+            f"/api/v1/tasks/{task['id']}/files/{file_item['id']}/blocks/{block['id']}",
+            headers=headers,
+            json={"content_text": "Product model: KBZ-500/1140A", "reason": "人工核对原文"},
+        )
+        assert revised.status_code == 200
+        assert revised.json()["data"]["content_text"].endswith("1140A")
+        reviewed = client.post(
+            f"/api/v1/tasks/{task['id']}/files/{file_item['id']}/parse-review",
+            headers=headers,
+            json={"decision": "accepted", "reason": "证据块已完成核对"},
+        )
+        assert reviewed.status_code == 200
+        assert reviewed.json()["data"]["parse_summary"]["quality_review"]["status"] == "accepted"
 
 
 def test_scanned_pdf_ocr_blocks_include_page_bbox_and_confidence() -> None:

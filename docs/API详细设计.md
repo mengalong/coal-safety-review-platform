@@ -126,6 +126,8 @@
 | `DELETE` | `/api/v1/tasks/{task_id}/files/{file_id}` | 软删除文件并保留审计记录 |
 | `POST` | `/api/v1/tasks/{task_id}/files/{file_id}/retry-parse` | 重试解析 |
 | `GET` | `/api/v1/tasks/{task_id}/files/{file_id}/blocks` | 查询解析证据块 |
+| `PATCH` | `/api/v1/tasks/{task_id}/files/{file_id}/blocks/{block_id}` | 人工修订证据块 |
+| `POST` | `/api/v1/tasks/{task_id}/files/{file_id}/parse-review` | 接受解析结果或要求重解析 |
 | `GET` | `/api/v1/tasks/{task_id}/files/{file_id}/pages` | 查询页面和缩略图元数据 |
 | `GET` | `/api/v1/tasks/{task_id}/files/{file_id}/pages/{page_no}/thumbnail` | 获取页面缩略图 |
 | `GET` | `/api/v1/tasks/{task_id}/files/{file_id}/pages/{page_no}/region` | 获取 PDF 区域证据图 |
@@ -150,6 +152,9 @@
 6. 上传入口直接拒绝超过 50 MiB 的单文件；DOCX/XLSX 解压后最大 200 MiB、归档条目最大 10000 个；PDF/工作表最大 1000 页，解析块最大 10000 个，单块文本最大 100000 字符。
 7. OCR 块使用 `ocr_line` 类型，`confidence` 为 `0..1`；`bbox` 使用 PDF 点坐标，包含 `x`、`y`、`width`、`height`、`page_width`、`page_height` 和 `unit=pt`。
 8. OCR 单页渲染最多 4000 万像素，DPI 允许 `72..600`，单页识别超时允许 `1..600` 秒；超限或 OCR 异常进入 `parse_failed` 并保留错误信息。
+9. 解析完成后写入 `quality_metrics`：质量分、平均置信度、页面覆盖率、低置信块数、未解析页数、是否需人工复核及原因。
+10. 人工修订只允许修改 `parsed` 文件的块文本、类型和坐标，修订后置信度设为 1，并通过 `operation_log` 保存前后快照和原因。
+11. `parse-review` 的 `accepted` 决策锁定当前复核状态；`reparse` 决策增加重试次数并创建新的解析作业。两种决策都记录审核人、时间和原因。
 
 页面资产语义：
 
