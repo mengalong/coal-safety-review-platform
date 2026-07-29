@@ -884,6 +884,34 @@ class SqlAlchemyStore(DemoStore):
             definitions = session.scalars(select(ExecutorDefinition).order_by(ExecutorDefinition.executor_code)).all()
             return [self._executor_dict(session, item) for item in definitions]
 
+    def create_executor(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        with self.session_factory() as session, session.begin():
+            if session.scalar(
+                select(ExecutorDefinition.id).where(ExecutorDefinition.executor_code == payload["executor_code"])
+            ):
+                return None
+            definition = ExecutorDefinition(
+                executor_code=payload["executor_code"],
+                executor_name=payload["executor_name"],
+                executor_kind=payload.get("executor_kind", "builtin"),
+                input_type=payload.get("input_type", "rule_input"),
+                output_type=payload.get("output_type", "rule_result"),
+                runtime_mode=payload.get("runtime_mode", "worker"),
+                status=payload.get("status", "draft"),
+            )
+            session.add(definition)
+            session.flush()
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="executor_definition",
+                entity_id=definition.id,
+                action_code="executor.create",
+                after_snapshot={"executor_code": definition.executor_code},
+                trace_id=payload.get("_trace_id"),
+            )
+            return self._executor_dict(session, definition)
+
     def list_executor_versions(self, executor_code: str) -> list[dict[str, Any]] | None:
         with self.session_factory() as session:
             definition = session.scalar(
@@ -897,6 +925,42 @@ class SqlAlchemyStore(DemoStore):
                 .order_by(ExecutorVersion.created_at.desc())
             ).all()
             return [self._executor_version_dict(session, item) for item in versions]
+
+    def create_executor_version(self, executor_code: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        with self.session_factory() as session, session.begin():
+            definition = session.scalar(
+                select(ExecutorDefinition).where(ExecutorDefinition.executor_code == executor_code)
+            )
+            if not definition or session.scalar(
+                select(ExecutorVersion.id).where(
+                    ExecutorVersion.executor_definition_id == definition.id,
+                    ExecutorVersion.version_no == payload["version_no"],
+                )
+            ):
+                return None
+            version = ExecutorVersion(
+                executor_definition_id=definition.id,
+                version_no=payload["version_no"],
+                parameter_schema=payload.get("parameter_schema") or {},
+                result_schema=payload.get("result_schema") or {},
+                default_timeout_seconds=payload.get("default_timeout_seconds", 60),
+                supports_batch=payload.get("supports_batch", False),
+                entrypoint=payload.get("entrypoint"),
+                image_version=payload.get("image_version"),
+                status=payload.get("status", "draft"),
+            )
+            session.add(version)
+            session.flush()
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="executor_version",
+                entity_id=version.id,
+                action_code="executor.version.create",
+                after_snapshot={"executor_code": executor_code, "version_no": version.version_no},
+                trace_id=payload.get("_trace_id"),
+            )
+            return self._executor_version_dict(session, version)
 
     def list_rules(self) -> list[dict[str, Any]]:
         with self.session_factory() as session:

@@ -746,6 +746,39 @@ def test_rule_and_executor_catalog_workflow() -> None:
         ).status_code == 403
 
         admin_headers = _login(client, login_name="admin")
+        created_executor = client.post(
+            "/api/v1/executors",
+            headers=admin_headers,
+            json={
+                "executor_code": "custom_consistency",
+                "executor_name": "自定义一致性检查",
+                "executor_kind": "builtin",
+                "input_type": "rule_input",
+                "output_type": "rule_result",
+                "runtime_mode": "worker",
+            },
+        )
+        assert created_executor.status_code == 201
+        assert created_executor.json()["data"]["versions"] == []
+        created_executor_version = client.post(
+            "/api/v1/executors/custom_consistency/versions",
+            headers=admin_headers,
+            json={
+                "version_no": "1.0.0",
+                "parameter_schema": {"type": "object"},
+                "result_schema": {"type": "object"},
+                "entrypoint": "coal_platform.executors.custom_consistency:execute",
+                "image_version": "worker-2026.07",
+            },
+        )
+        assert created_executor_version.status_code == 201
+        assert created_executor_version.json()["data"]["executor_code"] == "custom_consistency"
+        assert client.post(
+            "/api/v1/executors/custom_consistency/versions",
+            headers=reviewer_headers,
+            json={"version_no": "2.0.0"},
+        ).status_code == 403
+
         created = client.post(
             "/api/v1/rules",
             headers=admin_headers,

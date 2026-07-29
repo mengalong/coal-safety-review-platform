@@ -211,12 +211,14 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/api/v1/executors` | 执行器目录 |
+| `POST` | `/api/v1/executors` | 管理员创建执行器元数据 |
 | `GET` | `/api/v1/executors/{executor_code}` | 执行器详情 |
 | `GET` | `/api/v1/executors/{executor_code}/versions` | 版本列表 |
-| `POST` | `/api/v1/executors/{executor_version_id}/pause` | 暂停 |
-| `POST` | `/api/v1/executors/{executor_version_id}/ban` | 封禁 |
-| `POST` | `/api/v1/executors/{executor_version_id}/restore` | 恢复 |
-| `POST` | `/api/v1/executors/{executor_version_id}/deprecate` | 弃用 |
+| `POST` | `/api/v1/executors/{executor_code}/versions` | 管理员创建执行器版本元数据 |
+
+执行器管理接口只维护输入输出类型、运行模式、版本号、JSON Schema、入口点和镜像版本等元数据，
+不接收或保存执行器源代码。执行器 Python 实现由研发随 Worker 镜像发布，规则版本只引用已登记的具体
+执行器版本 ID。
 
 ### 7.2 规则
 

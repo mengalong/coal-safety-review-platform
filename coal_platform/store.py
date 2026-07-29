@@ -1316,9 +1316,51 @@ class DemoStore:
     def list_executors(self) -> list[dict]:
         return [deepcopy(item) for item in self.executors.values()]
 
+    def create_executor(self, payload: dict) -> dict | None:
+        with self._lock:
+            code = payload["executor_code"]
+            if code in self.executors:
+                return None
+            executor = {
+                "id": str(uuid4()),
+                "executor_code": code,
+                "executor_name": payload["executor_name"],
+                "executor_kind": payload.get("executor_kind", "builtin"),
+                "input_type": payload.get("input_type", "rule_input"),
+                "output_type": payload.get("output_type", "rule_result"),
+                "runtime_mode": payload.get("runtime_mode", "worker"),
+                "status": payload.get("status", "draft"),
+                "version_no": None,
+                "versions": [],
+            }
+            self.executors[code] = executor
+            return deepcopy(executor)
+
     def list_executor_versions(self, executor_code: str) -> list[dict] | None:
         executor = self.executors.get(executor_code)
         return deepcopy(executor.get("versions", [])) if executor else None
+
+    def create_executor_version(self, executor_code: str, payload: dict) -> dict | None:
+        with self._lock:
+            executor = self.executors.get(executor_code)
+            if not executor or any(item["version_no"] == payload["version_no"] for item in executor["versions"]):
+                return None
+            version = {
+                "id": str(uuid4()),
+                "executor_definition_id": executor["id"],
+                "executor_code": executor_code,
+                "version_no": payload["version_no"],
+                "parameter_schema": deepcopy(payload.get("parameter_schema") or {}),
+                "result_schema": deepcopy(payload.get("result_schema") or {}),
+                "default_timeout_seconds": payload.get("default_timeout_seconds", 60),
+                "supports_batch": payload.get("supports_batch", False),
+                "entrypoint": payload.get("entrypoint"),
+                "image_version": payload.get("image_version"),
+                "status": payload.get("status", "draft"),
+            }
+            executor["versions"].insert(0, version)
+            executor["version_no"] = version["version_no"]
+            return deepcopy(version)
 
     @staticmethod
     def _rule_pack_dict(pack: dict) -> dict:

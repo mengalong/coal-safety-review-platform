@@ -21,6 +21,8 @@ from coal_platform.schemas import (
     BasicInfoPayload,
     DynamicItemDecisionRequest,
     ExecutionAttemptRequest,
+    ExecutorCreateRequest,
+    ExecutorVersionCreateRequest,
     IssueCategoryRequest,
     IssueUpdateRequest,
     LocalRerunRequest,
@@ -1097,12 +1099,34 @@ def list_executors(request: Request) -> dict:
     return _ok(request.app.state.store.list_executors())
 
 
+@executors_router.post("", dependencies=[Depends(require_admin)])
+def create_executor(payload: ExecutorCreateRequest, request: Request) -> JSONResponse:
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    executor = request.app.state.store.create_executor(data)
+    if not executor:
+        raise HTTPException(status_code=409, detail="executor code already exists")
+    return JSONResponse(status_code=201, content=_ok(executor, "executor created"))
+
+
 @executors_router.get("/{executor_code}/versions")
 def list_executor_versions(executor_code: str, request: Request) -> dict:
     versions = request.app.state.store.list_executor_versions(executor_code)
     if versions is None:
         raise HTTPException(status_code=404, detail="executor not found")
     return _ok(versions)
+
+
+@executors_router.post("/{executor_code}/versions", dependencies=[Depends(require_admin)])
+def create_executor_version(
+    executor_code: str, payload: ExecutorVersionCreateRequest, request: Request
+) -> JSONResponse:
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    version = request.app.state.store.create_executor_version(executor_code, data)
+    if not version:
+        raise HTTPException(status_code=409, detail="executor not found or version already exists")
+    return JSONResponse(status_code=201, content=_ok(version, "executor version created"))
 
 
 @executors_router.get("/{executor_code}")

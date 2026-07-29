@@ -9,3 +9,5 @@ __pycache__
 prototype
 docs
 tests
+frontend/node_modules
+frontend/dist

@@ -37,7 +37,12 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 480
     jwt_algorithm: str = "HS256"
     log_level: str = "INFO"
-    cors_origins: list[str] = ["http://127.0.0.1:65513", "http://localhost:65513"]
+    cors_origins: list[str] = [
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:8080",
+        "http://localhost:8080",
+    ]
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="COAL_")
 

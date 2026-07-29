@@ -15,6 +15,16 @@ uvicorn coal_platform.main:app --reload --host 127.0.0.1 --port 8000
 
 API 文档：`http://127.0.0.1:8000/api/docs`
 
+另开终端启动 React 生产前端开发服务：
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+前端地址：`http://127.0.0.1:5173`。Vite 会将 `/api` 请求代理到本机 `8000` 端口。
+
 开发环境会幂等创建两个演示账号：
 
 | 登录名 | 角色 | 密码 |
@@ -44,8 +54,7 @@ python -m http.server 65513 --directory prototype
 docker compose up --build
 ```
 
-该命令会启动 API、Celery Worker、PostgreSQL/pgvector、Redis 和 MinIO。容器镜像内置 Tesseract、简体中文和英文识别数据，不依赖 GPU。API 会将文档解析、审核和试运行作业自动派发到 Redis，Worker 从 Redis 消费作业，失败作业最多自动重试 3 次。MinIO 控制台地址为
-`http://127.0.0.1:9001`。
+该命令会启动 React/Nginx Web、API、Celery Worker、PostgreSQL/pgvector、Redis 和 MinIO。容器镜像内置 Tesseract、简体中文和英文识别数据，不依赖 GPU。API 会将文档解析、审核和试运行作业自动派发到 Redis，Worker 从 Redis 消费作业，失败作业最多自动重试 3 次。生产前端地址为 `http://127.0.0.1:8080`，MinIO 控制台地址为 `http://127.0.0.1:9001`。
 
 ## 验证
 
@@ -54,6 +63,8 @@ pytest
 ruff check coal_platform tests
 alembic upgrade head
 alembic downgrade base
+cd frontend && npm run lint && npm run test && npm run build
+docker compose config
 ```
 
 默认 `.env.example` 使用 SQLite，便于只运行 API 骨架；容器环境使用 PostgreSQL。

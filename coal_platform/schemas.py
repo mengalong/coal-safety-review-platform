@@ -96,6 +96,27 @@ class RuleCreateRequest(BaseModel):
     is_mandatory: bool = False
 
 
+class ExecutorCreateRequest(BaseModel):
+    executor_code: str
+    executor_name: str
+    executor_kind: str = "builtin"
+    input_type: str = "rule_input"
+    output_type: str = "rule_result"
+    runtime_mode: str = "worker"
+    status: str = "draft"
+
+
+class ExecutorVersionCreateRequest(BaseModel):
+    version_no: str
+    parameter_schema: dict[str, Any] = Field(default_factory=dict)
+    result_schema: dict[str, Any] = Field(default_factory=dict)
+    default_timeout_seconds: int = Field(default=60, ge=1, le=3600)
+    supports_batch: bool = False
+    entrypoint: str | None = None
+    image_version: str | None = None
+    status: str = "draft"
+
+
 class RuleVersionCreateRequest(BaseModel):
     version_no: str | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
