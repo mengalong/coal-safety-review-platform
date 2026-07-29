@@ -1991,6 +1991,74 @@ class SqlAlchemyStore(DemoStore):
             ).all()
             return [self._audit_run_dict(item) for item in runs]
 
+    def get_audit_progress(self, round_id: str) -> dict[str, Any] | None:
+        round_uuid = _uuid(round_id)
+        if not round_uuid:
+            return None
+        with self.session_factory() as session:
+            if not session.get(AuditRound, round_uuid):
+                return None
+            latest = session.scalar(
+                select(AuditRun).where(AuditRun.round_id == round_uuid).order_by(AuditRun.run_no.desc()).limit(1)
+            )
+            executions = session.scalars(
+                select(RuleExecution).where(RuleExecution.audit_run_id == latest.id)
+            ).all() if latest else []
+            counts: dict[str, int] = {}
+            for item in executions:
+                counts[item.status] = counts.get(item.status, 0) + 1
+            terminal = {"succeeded", "failed", "unable_to_determine", "exception", "canceled", "expired"}
+            completed = sum(count for status, count in counts.items() if status in terminal)
+            total = len(executions)
+            return {
+                "round_id": round_id, "audit_run_id": str(latest.id) if latest else None,
+                "run_no": latest.run_no if latest else None, "status": latest.status if latest else "not_started",
+                "total": total, "completed": completed,
+                "progress_percent": round(completed * 100 / total, 1) if total else 0.0,
+                "status_counts": counts,
+            }
+
+    def check_round_publishability(self, round_id: str) -> dict[str, Any] | None:
+        round_uuid = _uuid(round_id)
+        if not round_uuid:
+            return None
+        with self.session_factory() as session:
+            if not session.get(AuditRound, round_uuid):
+                return None
+            blockers = []
+            confirmed_count = session.scalar(
+                select(func.count(RoundStandard.id)).where(
+                    RoundStandard.round_id == round_uuid, RoundStandard.snapshot_no.like("SNAPSHOT-%")
+                )
+            ) or 0
+            if not confirmed_count:
+                blockers.append({"code": "NO_CONFIRMED_STANDARD", "message": "本轮尚未确认适用标准"})
+            pending_coverage = session.scalar(
+                select(func.count(RoundStandardCoverage.id)).where(
+                    RoundStandardCoverage.round_id == round_uuid,
+                    RoundStandardCoverage.coverage_status == "to_confirm",
+                )
+            ) or 0
+            if pending_coverage:
+                blockers.append({"code": "COVERAGE_TO_CONFIRM", "message": "标准覆盖清单仍有待确认项", "count": pending_coverage})
+            executions = session.scalars(
+                select(RuleExecution).where(RuleExecution.round_id == round_uuid, RuleExecution.is_expired.is_(False))
+            ).all()
+            pending_count = sum(item.status in {"pending", "running"} for item in executions)
+            exception_count = sum(item.status in {"exception", "expired"} for item in executions)
+            if pending_count:
+                blockers.append({"code": "EXECUTION_INCOMPLETE", "message": "仍有规则执行未完成", "count": pending_count})
+            if exception_count:
+                blockers.append({"code": "EXECUTION_EXCEPTION", "message": "仍有执行异常未处置", "count": exception_count})
+            open_issue_count = session.scalar(
+                select(func.count(AuditIssue.id)).where(
+                    AuditIssue.round_id == round_uuid, AuditIssue.status == "open"
+                )
+            ) or 0
+            if open_issue_count:
+                blockers.append({"code": "ISSUE_TO_REVIEW", "message": "仍有问题等待人工复核", "count": open_issue_count})
+            return {"round_id": round_id, "can_publish": not blockers, "blockers": blockers}
+
     def _rule_execution_dict(self, session: Session, item: RuleExecution) -> dict[str, Any]:
         version = session.get(RuleVersion, item.rule_version_id)
         definition = session.get(RuleDefinition, version.rule_definition_id) if version else None

@@ -1388,6 +1388,53 @@ class DemoStore:
             return None
         return [deepcopy(item) for item in self.audit_runs.values() if item["round_id"] == round_id]
 
+    def get_audit_progress(self, round_id: str) -> dict | None:
+        runs = self.list_audit_runs(round_id)
+        if runs is None:
+            return None
+        latest = max(runs, key=lambda item: item["run_no"], default=None)
+        executions = [
+            item for item in self.rule_executions.values()
+            if latest and item["audit_run_id"] == latest["id"]
+        ]
+        counts: dict[str, int] = {}
+        for item in executions:
+            counts[item["status"]] = counts.get(item["status"], 0) + 1
+        terminal = {"succeeded", "failed", "unable_to_determine", "exception", "canceled", "expired"}
+        completed = sum(count for status, count in counts.items() if status in terminal)
+        total = len(executions)
+        return {
+            "round_id": round_id, "audit_run_id": latest["id"] if latest else None,
+            "run_no": latest["run_no"] if latest else None, "status": latest["status"] if latest else "not_started",
+            "total": total, "completed": completed,
+            "progress_percent": round(completed * 100 / total, 1) if total else 0.0,
+            "status_counts": counts,
+        }
+
+    def check_round_publishability(self, round_id: str) -> dict | None:
+        _task, round_item = self._find_round(round_id)
+        if not round_item:
+            return None
+        blockers = []
+        confirmed_standards = [item for item in round_item.get("standards", []) if item.get("status") == "confirmed"]
+        if not confirmed_standards:
+            blockers.append({"code": "NO_CONFIRMED_STANDARD", "message": "本轮尚未确认适用标准"})
+        coverage = self.list_coverage(round_id) or {"items": []}
+        pending_coverage = [item for item in coverage["items"] if item.get("applicability_status") == "to_confirm"]
+        if pending_coverage:
+            blockers.append({"code": "COVERAGE_TO_CONFIRM", "message": "标准覆盖清单仍有待确认项", "count": len(pending_coverage)})
+        executions = [item for item in self.rule_executions.values() if item["round_id"] == round_id and not item.get("is_expired")]
+        pending = [item for item in executions if item["status"] in {"pending", "running"}]
+        exceptions = [item for item in executions if item["status"] in {"exception", "expired"}]
+        if pending:
+            blockers.append({"code": "EXECUTION_INCOMPLETE", "message": "仍有规则执行未完成", "count": len(pending)})
+        if exceptions:
+            blockers.append({"code": "EXECUTION_EXCEPTION", "message": "仍有执行异常未处置", "count": len(exceptions)})
+        open_issues = [item for item in self.issues.values() if item["round_id"] == round_id and item["status"] == "open"]
+        if open_issues:
+            blockers.append({"code": "ISSUE_TO_REVIEW", "message": "仍有问题等待人工复核", "count": len(open_issues)})
+        return {"round_id": round_id, "can_publish": not blockers, "blockers": blockers}
+
     def list_rule_executions(self, round_id: str) -> list[dict] | None:
         if not self.get_round(round_id):
             return None

@@ -530,6 +530,18 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
         assert local.status_code == 202
         assert local.json()["data"]["run_scope"] == "local"
         assert local.json()["data"]["affected_rule_codes"] == [snapshot["rules"][0]["rule_code"]]
+        progress = client.get(
+            f"/api/v1/rounds/{task['current_round_id']}/audit/progress", headers=headers
+        )
+        assert progress.status_code == 200
+        assert progress.json()["data"]["total"] == 1
+        assert progress.json()["data"]["completed"] == 0
+        publish_check = client.post(
+            f"/api/v1/rounds/{task['current_round_id']}/coverage/check", headers=headers
+        )
+        assert publish_check.status_code == 200
+        assert publish_check.json()["data"]["can_publish"] is False
+        assert "EXECUTION_INCOMPLETE" in {item["code"] for item in publish_check.json()["data"]["blockers"]}
 
         repeated = client.post(
             f"/api/v1/rounds/{task['current_round_id']}/rules/assemble",

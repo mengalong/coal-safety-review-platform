@@ -120,6 +120,11 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     )
     assert local and local["run_scope"] == "local"
     assert store.list_rule_executions(task["current_round_id"])[0]["is_expired"] is True
+    progress = store.get_audit_progress(task["current_round_id"])
+    assert progress and progress["total"] == 1 and progress["completed"] == 0
+    publish_check = store.check_round_publishability(task["current_round_id"])
+    assert publish_check and publish_check["can_publish"] is False
+    assert any(item["code"] == "EXECUTION_INCOMPLETE" for item in publish_check["blockers"])
     updated = store.record_execution_attempt(
         executions[0]["id"],
         {

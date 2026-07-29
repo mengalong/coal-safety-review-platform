@@ -358,6 +358,18 @@ def list_coverage(round_id: str, request: Request) -> dict:
     return _ok(coverage or {"round_id": round_id, "summary": {}, "items": []})
 
 
+@rounds_router.post("/{round_id}/coverage/check")
+def check_coverage(round_id: str, request: Request) -> dict:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if task:
+        _ensure_task_access(request, task)
+    result = request.app.state.store.check_round_publishability(round_id)
+    return _ok(result or {"round_id": round_id, "can_publish": False, "blockers": []})
+
+
 @rounds_router.post("/{round_id}/audit/start")
 def start_audit(round_id: str, request: Request) -> JSONResponse:
     round_item = request.app.state.store.get_round(round_id)
@@ -402,6 +414,17 @@ def list_audit_runs(round_id: str, request: Request) -> dict:
     if task:
         _ensure_task_access(request, task)
     return _ok(request.app.state.store.list_audit_runs(round_id) or [])
+
+
+@rounds_router.get("/{round_id}/audit/progress")
+def get_audit_progress(round_id: str, request: Request) -> dict:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if task:
+        _ensure_task_access(request, task)
+    return _ok(request.app.state.store.get_audit_progress(round_id))
 
 
 @rounds_router.get("/{round_id}/rule-executions")
