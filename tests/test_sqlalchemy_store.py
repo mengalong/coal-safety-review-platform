@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
@@ -675,3 +676,15 @@ def test_database_store_api_uploads_file_and_enforces_owner_scope(tmp_path: Path
         logs = client.get("/api/v1/logs", headers=admin_headers)
         assert logs.status_code == 200
         assert {item["action_code"] for item in logs.json()["data"]} >= {"task.create", "task_file.upload"}
+
+
+def test_task_number_allocation_uses_postgresql_transaction_lock() -> None:
+    session = MagicMock()
+    session.get_bind.return_value.dialect.name = "postgresql"
+    session.scalar.return_value = "SH-2026-000042"
+    store = object.__new__(SqlAlchemyStore)
+
+    task_no = store._next_task_no(session)
+
+    assert task_no == "SH-2026-000043"
+    session.execute.assert_called_once()

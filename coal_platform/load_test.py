@@ -74,17 +74,21 @@ async def run_load_test(
     requests: int,
     concurrency: int,
     file_size_mb: int,
+    verify: bool | str = True,
+    wait_queue_seconds: int = 0,
 ) -> dict:
     limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
     timeout = httpx.Timeout(300, connect=10)
-    async with httpx.AsyncClient(base_url=base_url.rstrip("/"), verify=True, limits=limits, timeout=timeout) as client:
+    async with httpx.AsyncClient(base_url=base_url.rstrip("/"), verify=verify, limits=limits, timeout=timeout) as client:
         login = await client.post("/api/v1/auth/login", json={"login_name": login_name, "password": password})
         login.raise_for_status()
         client.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
         semaphore = asyncio.Semaphore(concurrency)
         stop_sampling = asyncio.Event()
         queue_peaks: list[int] = [0]
-        upload_content = b"Coal safety load test\n" * max(1, file_size_mb * 1024 * 1024 // 22)
+        target_size = file_size_mb * 1024 * 1024
+        marker = b"Coal safety load test document "
+        upload_content = marker + (b"X" * max(0, target_size - len(marker)))
 
         async def create_task(index: int) -> tuple[httpx.Response | None, Sample]:
             return await _request(
@@ -138,10 +142,27 @@ async def run_load_test(
         started = time.monotonic()
         sampler = asyncio.create_task(sample_queue())
         batches = await asyncio.gather(*(operation(index) for index in range(requests)))
+        drain_started = time.monotonic()
+        queue_drained = False
+        if wait_queue_seconds:
+            deadline = drain_started + wait_queue_seconds
+            while time.monotonic() < deadline:
+                response = await client.get("/api/v1/jobs")
+                response.raise_for_status()
+                jobs = response.json().get("data") or []
+                waiting = sum(item.get("status") in {"queued", "pending", "running"} for item in jobs)
+                queue_peaks[0] = max(queue_peaks[0], waiting)
+                if waiting == 0:
+                    queue_drained = True
+                    break
+                await asyncio.sleep(1)
         stop_sampling.set()
         await sampler
         elapsed = time.monotonic() - started
-        return summarize([sample for batch in batches for sample in batch], elapsed, queue_peaks[0])
+        result = summarize([sample for batch in batches for sample in batch], elapsed, queue_peaks[0])
+        result["queue_drained"] = queue_drained if wait_queue_seconds else None
+        result["queue_drain_seconds"] = round(time.monotonic() - drain_started, 3) if wait_queue_seconds else None
+        return result
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -152,6 +173,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--requests", type=int, default=100)
     parser.add_argument("--concurrency", type=int, default=10)
     parser.add_argument("--file-size-mb", type=int, default=20)
+    parser.add_argument("--ca-file", help="Internal CA certificate bundle; TLS verification is never disabled")
+    parser.add_argument("--wait-queue-seconds", type=int, default=0, help="Wait for queued/running jobs to drain")
     parser.add_argument("--max-error-rate", type=float, default=0.01)
     parser.add_argument("--max-p95-ms", type=float, default=5000)
     parser.add_argument("--output", type=Path)
@@ -161,18 +184,32 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _parser().parse_args()
-    if args.requests < 1 or args.concurrency < 1 or args.file_size_mb < 1 or args.file_size_mb > 95:
-        raise SystemExit("requests/concurrency must be positive and file-size-mb must be between 1 and 95")
+    if args.requests < 1 or args.concurrency < 1 or args.file_size_mb < 1 or args.file_size_mb > 49:
+        raise SystemExit("requests/concurrency must be positive and file-size-mb must be between 1 and 49")
     if args.mode != "read" and not args.confirm_write:
         raise SystemExit("write load modes require --confirm-write")
     password = os.getenv("COAL_LOAD_TEST_PASSWORD")
     if not password:
         raise SystemExit("COAL_LOAD_TEST_PASSWORD is required")
     result = asyncio.run(
-        run_load_test(args.base_url, args.login_name, password, args.mode, args.requests, args.concurrency, args.file_size_mb)
+        run_load_test(
+            args.base_url,
+            args.login_name,
+            password,
+            args.mode,
+            args.requests,
+            args.concurrency,
+            args.file_size_mb,
+            args.ca_file or True,
+            args.wait_queue_seconds,
+        )
     )
     result["thresholds"] = {"max_error_rate": args.max_error_rate, "max_p95_ms": args.max_p95_ms}
-    result["passed"] = result["error_rate"] <= args.max_error_rate and result["latency_ms"]["p95"] <= args.max_p95_ms
+    result["passed"] = (
+        result["error_rate"] <= args.max_error_rate
+        and result["latency_ms"]["p95"] <= args.max_p95_ms
+        and result["queue_drained"] is not False
+    )
     rendered = json.dumps(result, ensure_ascii=False, indent=2)
     print(rendered)
     if args.output:

@@ -2053,6 +2053,9 @@ class SqlAlchemyStore(DemoStore):
 
     def _next_task_no(self, session: Session) -> str:
         year = datetime.now(UTC).year
+        if session.get_bind().dialect.name == "postgresql":
+            # Serialize yearly human-readable number allocation across every API process.
+            session.execute(select(func.pg_advisory_xact_lock(0x434F414C + year)))
         latest = session.scalar(
             select(AuditTask.task_no)
             .where(AuditTask.task_no.like(f"SH-{year}-%"))

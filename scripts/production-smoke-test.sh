@@ -10,6 +10,10 @@ compose() {
 }
 
 compose ps --status running
+if compose ps -a | grep -Eq 'unhealthy|health: starting|Exited|Restarting'; then
+  echo "One or more production containers are not healthy" >&2
+  exit 1
+fi
 READY=$(curl -kfsS "https://127.0.0.1:$HTTPS_PORT/api/v1/readyz")
 echo "$READY" | grep -q '"status":"ready"'
 HEADERS=$(curl -kfsSI "https://127.0.0.1:$HTTPS_PORT/")

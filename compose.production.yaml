@@ -25,6 +25,9 @@ services:
     image: ${COAL_WEB_IMAGE:-coal-safety-review-web:local}
     build:
       context: ./frontend
+      args:
+        NODE_BASE_IMAGE: ${COAL_NODE_BASE_IMAGE:-public.ecr.aws/docker/library/node:22-alpine}
+        NGINX_BASE_IMAGE: ${COAL_NGINX_BASE_IMAGE:-public.ecr.aws/nginx/nginx-unprivileged:1.27-alpine}
     ports:
       - "${COAL_PUBLIC_HTTPS_PORT:-8443}:8443"
     volumes:
@@ -50,6 +53,8 @@ services:
     image: ${COAL_API_IMAGE:-coal-safety-review-api:local}
     build:
       context: .
+      args:
+        PYTHON_BASE_IMAGE: ${COAL_PYTHON_BASE_IMAGE:-public.ecr.aws/docker/library/python:3.12-slim}
     environment: *api-environment
     expose: ["8000"]
     read_only: true
@@ -70,6 +75,8 @@ services:
     image: ${COAL_API_IMAGE:-coal-safety-review-api:local}
     build:
       context: .
+      args:
+        PYTHON_BASE_IMAGE: ${COAL_PYTHON_BASE_IMAGE:-public.ecr.aws/docker/library/python:3.12-slim}
     command: celery -A coal_platform.worker:celery_app worker --loglevel=INFO --queues=coal --concurrency=2
     environment: *api-environment
     read_only: true
@@ -81,9 +88,15 @@ services:
       api:
         condition: service_healthy
     networks: [application, data]
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A coal_platform.worker:celery_app inspect ping --timeout 5 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   postgres:
-    image: pgvector/pgvector:pg17
+    image: ${COAL_POSTGRES_IMAGE:-pgvector/pgvector:pg17}
     environment:
       POSTGRES_DB: coal
       POSTGRES_USER: coal
@@ -99,13 +112,13 @@ services:
     security_opt: ["no-new-privileges:true"]
 
   redis:
-    image: redis:7.4-alpine
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${COAL_REDIS_PASSWORD:?required}"]
+    image: ${COAL_REDIS_IMAGE:-public.ecr.aws/docker/library/redis:7.4-alpine}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${COAL_REDIS_PASSWORD}\""]
     volumes:
       - coal_redis_data:/data
     networks: [data]
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a '$${COAL_REDIS_PASSWORD}' ping | grep PONG"]
+      test: ["CMD-SHELL", "redis-cli -a \"$${COAL_REDIS_PASSWORD}\" ping | grep PONG"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -114,7 +127,7 @@ services:
     security_opt: ["no-new-privileges:true"]
 
   minio:
-    image: minio/minio:latest
+    image: ${COAL_MINIO_IMAGE:-minio/minio:RELEASE.2025-06-13T11-33-47Z-cpuv1}
     command: server /data
     environment:
       MINIO_ROOT_USER: ${COAL_MINIO_ACCESS_KEY:?required}
@@ -123,14 +136,14 @@ services:
       - coal_minio_data:/data
     networks: [data]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 5s
       retries: 20
     security_opt: ["no-new-privileges:true"]
 
   minio-client:
-    image: minio/mc:latest
+    image: ${COAL_MINIO_CLIENT_IMAGE:-minio/mc:RELEASE.2025-05-21T01-59-54Z-cpuv1}
     profiles: ["maintenance"]
     entrypoint: /bin/sh
     environment:
@@ -175,6 +188,8 @@ services:
     image: ${COAL_API_IMAGE:-coal-safety-review-api:local}
     build:
       context: .
+      args:
+        PYTHON_BASE_IMAGE: ${COAL_PYTHON_BASE_IMAGE:-public.ecr.aws/docker/library/python:3.12-slim}
     profiles: ["observability"]
     command: uvicorn coal_platform.alert_notifier:app --host 0.0.0.0 --port 8080
     environment:

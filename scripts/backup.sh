@@ -20,7 +20,7 @@ export COAL_BACKUP_PATH="$BACKUP_ROOT"
 compose --profile maintenance run --rm minio-client -c \
   'mc alias set source http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null && mc mirror --overwrite source/coal-review "/backups/'"$STAMP"'.tmp/objects"'
 
-(cd "$TEMP" && find . -type f -print0 | sort -z | xargs -0 shasum -a 256 > SHA256SUMS)
+(cd "$TEMP" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 shasum -a 256 > SHA256SUMS)
 mv "$TEMP" "$TARGET"
 trap - EXIT INT TERM
 
