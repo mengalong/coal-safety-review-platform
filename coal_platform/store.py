@@ -1323,11 +1323,28 @@ class DemoStore:
             return None
         version_no = sum(1 for item in self.reports.values() if item.get("round_id") == round_item["id"]) + 1
         report_id = str(uuid4())
+        issues = [deepcopy(item) for item in self.issues.values() if item.get("round_id") == round_item["id"]]
+        executions = [deepcopy(item) for item in self.rule_executions.values() if item.get("round_id") == round_item["id"] and not item.get("is_expired")]
+        report_type = payload.get("report_type", "formal")
+        content_snapshot = {
+            "title": "审核意见单" if report_type == "opinion" else "煤矿安标技术文档审核报告",
+            "task": {key: task.get(key) for key in ("task_no", "customer_name", "product_name", "product_model")},
+            "round": {"round_no": round_item.get("round_no"), "round_note": round_item.get("round_note")},
+            "standards": deepcopy(round_item.get("standards", [])),
+            "execution_summary": {
+                "total": len(executions),
+                "status_counts": {status: sum(1 for item in executions if item.get("status") == status) for status in sorted({item.get("status") for item in executions})},
+            },
+            "issue_summary": {"total": len(issues), "confirmed": sum(1 for item in issues if item.get("status") == "confirmed")},
+            "issues": issues,
+            "conclusion": payload.get("conclusion", "through"),
+        }
         report = {
             "id": report_id, "round_id": round_item["id"],
             "report_no": f"{task['task_no']}-REP-V{version_no}",
-            "report_type": payload.get("report_type", "formal"), "version_no": version_no,
+            "report_type": report_type, "version_no": version_no,
             "conclusion": payload.get("conclusion", "through"), "status": "draft",
+            "content_snapshot": content_snapshot,
             "word_object_key": None, "pdf_object_key": None,
             "published_at": None, "created_at": _now(),
         }

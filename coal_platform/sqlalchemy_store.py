@@ -2446,6 +2446,7 @@ class SqlAlchemyStore(DemoStore):
             "id": str(report.id), "round_id": str(report.round_id), "report_no": report.report_no,
             "report_type": report.report_type, "version_no": report.version_no,
             "conclusion": report.conclusion, "status": report.status,
+            "content_snapshot": report.content_snapshot or {},
             "word_object_key": report.word_object_key, "pdf_object_key": report.pdf_object_key,
             "published_at": _iso(report.published_at), "created_at": _iso(report.created_at),
             "updated_at": _iso(report.updated_at),
@@ -2476,10 +2477,25 @@ class SqlAlchemyStore(DemoStore):
             version_no = (session.scalar(
                 select(func.max(Report.version_no)).where(Report.round_id == round_item.id)
             ) or 0) + 1
+            issues = [self._issue_dict(session, item) for item in session.scalars(select(AuditIssue).where(AuditIssue.round_id == round_item.id).order_by(AuditIssue.created_at))]
+            executions = list(session.scalars(select(RuleExecution).where(RuleExecution.round_id == round_item.id, RuleExecution.is_expired.is_(False))))
+            report_type = payload.get("report_type", "formal")
+            standards = [self._round_standard_dict(session, item) for item in session.scalars(select(RoundStandard).where(RoundStandard.round_id == round_item.id).order_by(RoundStandard.created_at))]
+            statuses = sorted({item.status for item in executions})
+            content_snapshot = {
+                "title": "审核意见单" if report_type == "opinion" else "煤矿安标技术文档审核报告",
+                "task": {"task_no": task.task_no, "customer_name": task.customer_name, "product_name": task.product_name, "product_model": task.product_model},
+                "round": {"round_no": round_item.round_no, "round_note": round_item.round_note},
+                "standards": standards,
+                "execution_summary": {"total": len(executions), "status_counts": {status: sum(1 for item in executions if item.status == status) for status in statuses}},
+                "issue_summary": {"total": len(issues), "confirmed": sum(1 for item in issues if item.get("status") == "confirmed")},
+                "issues": issues,
+                "conclusion": payload.get("conclusion", "through"),
+            }
             report = Report(
                 round_id=round_item.id, report_no=f"{task.task_no}-REP-V{version_no}",
-                report_type=payload.get("report_type", "formal"), version_no=version_no,
-                conclusion=payload.get("conclusion", "through"), status="draft",
+                report_type=report_type, version_no=version_no,
+                conclusion=payload.get("conclusion", "through"), content_snapshot=content_snapshot, status="draft",
             )
             session.add(report)
             session.flush()

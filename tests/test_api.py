@@ -692,6 +692,10 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
         )
         assert report_detail.status_code == 200
         assert report_detail.json()["data"]["report_no"] == report.json()["data"]["report_no"]
+        assert report_detail.json()["data"]["content_snapshot"]["task"]["task_no"] == task["task_no"]
+        preview = client.get(f"/api/v1/reports/{report.json()['data']['id']}/preview", headers=headers)
+        assert preview.status_code == 200
+        assert preview.json()["data"]["content"]["title"] == "煤矿安标技术文档审核报告"
         draft_artifacts = client.get(
             f"/api/v1/reports/{report.json()['data']['id']}/artifacts", headers=headers
         )

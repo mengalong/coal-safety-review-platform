@@ -280,6 +280,7 @@
 |---|---|---|
 | `GET` | `/api/v1/reports` | 报告列表 |
 | `GET` | `/api/v1/reports/{report_id}` | 报告详情 |
+| `GET` | `/api/v1/reports/{report_id}/preview` | 报告内容快照预览 |
 | `POST` | `/api/v1/rounds/{round_id}/reports` | 生成报告 |
 | `POST` | `/api/v1/reports/{report_id}/publish` | 发布报告 |
 | `GET` | `/api/v1/reports/{report_id}/download` | 下载 |

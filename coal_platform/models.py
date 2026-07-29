@@ -517,6 +517,7 @@ class Report(Base, IdMixin, AuditMixin):
     report_type: Mapped[str] = mapped_column(String(32), nullable=False)
     version_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     conclusion: Mapped[str] = mapped_column(String(32), nullable=False)
+    content_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     word_object_key: Mapped[str | None] = mapped_column(String(256))
     pdf_object_key: Mapped[str | None] = mapped_column(String(256))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)

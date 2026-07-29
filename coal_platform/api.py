@@ -1029,6 +1029,19 @@ async def download_report_artifact(report_id: str, artifact_type: str, request: 
     )
 
 
+@reports_router.get("/{report_id}/preview")
+def preview_report(report_id: str, request: Request) -> dict:
+    report = request.app.state.store.get_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="report not found")
+    round_item = request.app.state.store.get_round(report.get("round_id", ""))
+    task = request.app.state.store.get_task(round_item.get("task_id", "")) if round_item else None
+    if not task:
+        raise HTTPException(status_code=404, detail="report round not found")
+    _ensure_task_access(request, task)
+    return _ok({"report_no": report["report_no"], "report_type": report["report_type"], "version_no": report["version_no"], "status": report["status"], "content": report.get("content_snapshot") or {}})
+
+
 @reports_router.post("")
 def create_report(payload: ReportCreateRequest, request: Request) -> JSONResponse:
     round_item = request.app.state.store.get_round(payload.round_id)
