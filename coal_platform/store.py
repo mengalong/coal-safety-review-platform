@@ -1383,6 +1383,15 @@ class DemoStore:
                     ),
                     None,
                 )
+                incoming_severity = issue_payload.get("severity") or (issue.get("severity") if issue else "一般")
+                incoming_conclusion = issue_payload.get("system_conclusion", "failed")
+                is_conflict = bool(
+                    issue
+                    and (
+                        issue.get("severity") != incoming_severity
+                        or issue.get("system_conclusion") != incoming_conclusion
+                    )
+                )
                 if not issue:
                     issue_id = str(uuid4())
                     issue = {
@@ -1399,17 +1408,39 @@ class DemoStore:
                         "affects_conclusion": issue_payload.get("affects_conclusion", False),
                         "manual_reason": None,
                         "sources": [],
+                        "evidence": [],
                         "created_at": _now(),
                         "updated_at": _now(),
                     }
                     self.issues[issue_id] = issue
+                customer_evidence = issue_payload.get("customer_evidence") or []
+                standard_evidence = issue_payload.get("standard_evidence") or []
+                if isinstance(customer_evidence, dict):
+                    customer_evidence = [customer_evidence]
+                if isinstance(standard_evidence, dict):
+                    standard_evidence = [standard_evidence]
+                source_status = "active"
+                if not customer_evidence or not standard_evidence:
+                    source_status = "evidence_insufficient"
+                    issue["system_conclusion"] = "unable_to_determine"
+                if is_conflict:
+                    source_status = "conflict"
+                    issue["system_conclusion"] = "conflict_requires_review"
+                    issue["status"] = "open"
+                    for source in issue["sources"]:
+                        source["source_status"] = "conflict"
                 if not any(source["rule_execution_id"] == execution_id for source in issue["sources"]):
                     issue["sources"].append({
                         "source_type": "rule_execution",
                         "rule_execution_id": execution_id,
-                        "source_status": "active",
+                        "source_status": source_status,
                         "source_payload": deepcopy(issue_payload),
                     })
+                    issue["evidence"].extend(
+                        {"evidence_type": evidence_type, **deepcopy(entry)}
+                        for evidence_type, entries in (("customer", customer_evidence), ("standard", standard_evidence))
+                        for entry in entries
+                    )
             return deepcopy(item)
 
     def retry_rule_execution(self, execution_id: str, payload: dict) -> dict | None:

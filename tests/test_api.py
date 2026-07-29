@@ -477,6 +477,8 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
                     "title": "产品型号不一致",
                     "description": "说明书与图纸型号不一致",
                     "severity": "严重",
+                    "customer_evidence": {"page_no": 3, "excerpt_text": "型号为 A"},
+                    "standard_evidence": {"excerpt_text": "型号应保持一致"},
                 }},
                 "elapsed_ms": 1200,
             },
@@ -486,11 +488,28 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
         retried = client.post(f"/api/v1/rule-executions/{execution_id}/retry", headers=headers)
         assert retried.status_code == 200
         assert retried.json()["data"]["retry_count"] == 1
+        second_execution_id = executions.json()["data"][1]["id"]
+        conflicting = client.post(
+            f"/api/v1/rule-executions/{second_execution_id}/attempts",
+            headers=headers,
+            json={"status": "failed", "output_payload": {"issue": {
+                "issue_code": "MODEL-INCONSISTENT",
+                "title": "产品型号不一致",
+                "description": "另一规则发现同一问题",
+                "severity": "一般",
+                "customer_evidence": {"page_no": 8, "excerpt_text": "型号为 B"},
+                "standard_evidence": {"excerpt_text": "型号应保持一致"},
+            }}},
+        )
+        assert conflicting.status_code == 200
         issues = client.get(
             "/api/v1/issues", headers=headers, params={"round_id": task["current_round_id"]}
         )
         assert issues.status_code == 200
         assert len(issues.json()["data"]) == 1
+        assert issues.json()["data"][0]["system_conclusion"] == "conflict_requires_review"
+        assert len(issues.json()["data"][0]["sources"]) == 2
+        assert len(issues.json()["data"][0]["evidence"]) == 4
         issue_id = issues.json()["data"][0]["id"]
         confirmed = client.post(
             f"/api/v1/issues/{issue_id}/confirm",

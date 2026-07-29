@@ -123,6 +123,8 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
                 "issue_code": "MODEL-INCONSISTENT",
                 "title": "产品型号不一致",
                 "description": "说明书与图纸型号不一致",
+                "customer_evidence": {"page_no": 3, "excerpt_text": "型号为 A"},
+                "standard_evidence": {"excerpt_text": "型号应保持一致"},
             }},
             "elapsed_ms": 900,
         },
@@ -130,8 +132,21 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     assert updated and updated["status"] == "failed" and updated["attempt_count"] == 1
     retried = store.retry_rule_execution(executions[0]["id"], {})
     assert retried and retried["status"] == "pending" and retried["retry_count"] == 1
+    store.record_execution_attempt(
+        executions[1]["id"],
+        {"status": "failed", "output_payload": {"issue": {
+            "issue_code": "MODEL-INCONSISTENT",
+            "title": "产品型号不一致",
+            "description": "另一规则发现同一问题",
+            "severity": "严重",
+            "customer_evidence": {"page_no": 8, "excerpt_text": "型号为 B"},
+            "standard_evidence": {"excerpt_text": "型号应保持一致"},
+        }}},
+    )
     issues = store.list_issues(task["current_round_id"])
     assert len(issues) == 1 and issues[0]["issue_code"] == "MODEL-INCONSISTENT"
+    assert issues[0]["system_conclusion"] == "conflict_requires_review"
+    assert len(issues[0]["sources"]) == 2 and len(issues[0]["evidence"]) == 4
     confirmed = store.set_issue_status(issues[0]["id"], "confirmed", "证据已人工核对")
     assert confirmed and confirmed["status"] == "confirmed"
 

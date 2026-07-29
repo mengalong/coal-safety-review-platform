@@ -19,6 +19,7 @@ from coal_platform.models import (
     DynamicAuditItem,
     ExecutorDefinition,
     ExecutorVersion,
+    IssueEvidence,
     IssueSource,
     OperationLog,
     QueueJob,
@@ -1966,8 +1967,13 @@ class SqlAlchemyStore(DemoStore):
                 "started_at": _iso(item.started_at), "finished_at": _iso(item.finished_at),
             } for item in attempts]
 
-    @staticmethod
-    def _issue_dict(issue: AuditIssue) -> dict[str, Any]:
+    def _issue_dict(self, session: Session, issue: AuditIssue) -> dict[str, Any]:
+        sources = session.scalars(
+            select(IssueSource).where(IssueSource.issue_id == issue.id).order_by(IssueSource.created_at)
+        ).all()
+        evidence = session.scalars(
+            select(IssueEvidence).where(IssueEvidence.issue_id == issue.id).order_by(IssueEvidence.created_at)
+        ).all()
         return {
             "id": str(issue.id), "round_id": str(issue.round_id), "issue_code": issue.issue_code,
             "title": issue.title, "description": issue.description, "category_code": issue.category_code,
@@ -1975,6 +1981,20 @@ class SqlAlchemyStore(DemoStore):
             "manual_conclusion": issue.manual_conclusion, "affects_conclusion": issue.affects_conclusion,
             "manual_reason": issue.manual_reason, "created_at": _iso(issue.created_at),
             "updated_at": _iso(issue.updated_at),
+            "sources": [{
+                "id": str(item.id), "source_type": item.source_type,
+                "rule_execution_id": str(item.rule_execution_id) if item.rule_execution_id else None,
+                "dynamic_item_id": str(item.dynamic_item_id) if item.dynamic_item_id else None,
+                "source_status": item.source_status, "source_payload": item.source_payload,
+            } for item in sources],
+            "evidence": [{
+                "id": str(item.id), "evidence_type": item.evidence_type,
+                "file_id": str(item.file_id) if item.file_id else None,
+                "clause_id": str(item.clause_id) if item.clause_id else None,
+                "page_no": item.page_no, "bbox": item.bbox, "excerpt_text": item.excerpt_text,
+                "artifact_uri": item.artifact_uri,
+                "confidence": float(item.confidence) if item.confidence is not None else None,
+            } for item in evidence],
         }
 
     def list_issues(self, round_id: str | None = None) -> list[dict[str, Any]]:
@@ -1983,7 +2003,7 @@ class SqlAlchemyStore(DemoStore):
             query = select(AuditIssue).order_by(AuditIssue.created_at.desc())
             if round_uuid:
                 query = query.where(AuditIssue.round_id == round_uuid)
-            return [self._issue_dict(item) for item in session.scalars(query)]
+            return [self._issue_dict(session, item) for item in session.scalars(query)]
 
     def get_issue(self, issue_id: str) -> dict[str, Any] | None:
         issue_uuid = _uuid(issue_id)
@@ -1991,7 +2011,7 @@ class SqlAlchemyStore(DemoStore):
             return None
         with self.session_factory() as session:
             issue = session.get(AuditIssue, issue_uuid)
-            return self._issue_dict(issue) if issue else None
+            return self._issue_dict(session, issue) if issue else None
 
     def update_issue(self, issue_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         issue_uuid = _uuid(issue_id)
@@ -2001,7 +2021,7 @@ class SqlAlchemyStore(DemoStore):
             issue = session.get(AuditIssue, issue_uuid)
             if not issue:
                 return None
-            before = self._issue_dict(issue)
+            before = self._issue_dict(session, issue)
             for key in ("title", "description", "category_code", "severity", "affects_conclusion"):
                 if payload.get(key) is not None:
                     setattr(issue, key, payload[key])
@@ -2014,12 +2034,12 @@ class SqlAlchemyStore(DemoStore):
                 entity_id=issue.id,
                 action_code="issue.update",
                 before_snapshot=before,
-                after_snapshot=self._issue_dict(issue),
+                after_snapshot=self._issue_dict(session, issue),
                 reason=payload.get("reason"),
                 trace_id=payload.get("_trace_id"),
             )
             session.flush()
-            return self._issue_dict(issue)
+            return self._issue_dict(session, issue)
 
     def set_issue_status(
         self,
@@ -2054,7 +2074,7 @@ class SqlAlchemyStore(DemoStore):
                 trace_id=operation_context.get("_trace_id"),
             )
             session.flush()
-            return self._issue_dict(issue)
+            return self._issue_dict(session, issue)
 
     def record_execution_attempt(self, execution_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         execution_uuid = _uuid(execution_id)
@@ -2099,6 +2119,16 @@ class SqlAlchemyStore(DemoStore):
                         AuditIssue.issue_code == issue_code,
                     )
                 )
+                existing_issue = issue is not None
+                incoming_severity = issue_payload.get("severity") or (issue.severity if issue else None)
+                incoming_conclusion = issue_payload.get("system_conclusion") or "failed"
+                is_conflict = bool(
+                    issue
+                    and (
+                        issue.severity != incoming_severity
+                        or issue.system_conclusion != incoming_conclusion
+                    )
+                )
                 if not issue:
                     version = session.get(RuleVersion, execution.rule_version_id)
                     definition = session.get(RuleDefinition, version.rule_definition_id) if version else None
@@ -2119,6 +2149,23 @@ class SqlAlchemyStore(DemoStore):
                     )
                     session.add(issue)
                     session.flush()
+                customer_evidence = issue_payload.get("customer_evidence") or []
+                standard_evidence = issue_payload.get("standard_evidence") or []
+                if isinstance(customer_evidence, dict):
+                    customer_evidence = [customer_evidence]
+                if isinstance(standard_evidence, dict):
+                    standard_evidence = [standard_evidence]
+                source_status = "active"
+                if not customer_evidence or not standard_evidence:
+                    source_status = "evidence_insufficient"
+                    if issue.status == "open":
+                        issue.system_conclusion = "unable_to_determine"
+                if existing_issue and is_conflict:
+                    source_status = "conflict"
+                    issue.system_conclusion = "conflict_requires_review"
+                    issue.status = "open"
+                    for related in session.scalars(select(IssueSource).where(IssueSource.issue_id == issue.id)):
+                        related.source_status = "conflict"
                 source = session.scalar(
                     select(IssueSource).where(
                         IssueSource.issue_id == issue.id,
@@ -2126,16 +2173,30 @@ class SqlAlchemyStore(DemoStore):
                     )
                 )
                 if not source:
-                    session.add(
-                        IssueSource(
-                            issue_id=issue.id,
-                            source_type="rule_execution",
-                            rule_execution_id=execution.id,
-                            dynamic_item_id=execution.dynamic_item_id,
-                            source_status="active",
-                            source_payload=issue_payload,
-                        )
+                    source = IssueSource(
+                        issue_id=issue.id,
+                        source_type="rule_execution",
+                        rule_execution_id=execution.id,
+                        dynamic_item_id=execution.dynamic_item_id,
+                        source_status=source_status,
+                        source_payload=issue_payload,
                     )
+                    session.add(source)
+                    for evidence_type, entries in (("customer", customer_evidence), ("standard", standard_evidence)):
+                        for entry in entries:
+                            session.add(
+                                IssueEvidence(
+                                    issue_id=issue.id,
+                                    evidence_type=evidence_type,
+                                    file_id=_uuid(entry.get("file_id")),
+                                    clause_id=_uuid(entry.get("clause_id")),
+                                    page_no=entry.get("page_no"),
+                                    bbox=entry.get("bbox"),
+                                    excerpt_text=entry.get("excerpt_text"),
+                                    artifact_uri=entry.get("artifact_uri"),
+                                    confidence=entry.get("confidence"),
+                                )
+                            )
             session.flush()
             return self._rule_execution_dict(session, execution)
 
