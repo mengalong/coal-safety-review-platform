@@ -54,8 +54,21 @@ class ModelGateway:
         if self._owns_transport:
             self.transport.close()
 
-    def chat(self, config_id: str, messages: list[dict[str, Any]], *, trace_id: str | None = None) -> dict:
-        return self._invoke(config_id, "chat", "/chat/completions", {"messages": messages}, trace_id)
+    def chat(
+        self,
+        config_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        trace_id: str | None = None,
+        response_format: dict[str, Any] | None = None,
+        temperature: float | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {"messages": messages}
+        if response_format is not None:
+            payload["response_format"] = response_format
+        if temperature is not None:
+            payload["temperature"] = temperature
+        return self._invoke(config_id, "chat", "/chat/completions", payload, trace_id)
 
     def multimodal_chat(
         self, config_id: str, messages: list[dict[str, Any]], *, trace_id: str | None = None

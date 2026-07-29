@@ -378,6 +378,15 @@
 
 `pending -> waiting_dependency -> running -> passed / failed / unable_to_determine / exception / canceled / expired`
 
+动态原子审核执行约束：
+
+1. 确认适用的 `dynamic_audit_item` 在启动审核时按条款各生成一条独立 `rule_execution`，统一使用发布态 `DYNAMIC_STANDARD_CLAUSE_REVIEW` 规则和 `semantic_compare` AI 执行器。
+2. `input_snapshot` 冻结动态项、客户证据、标准证据，以及模型配置 ID、模型编码和凭据版本；后续模型轮换不得改写历史执行。
+3. 客户证据只从解析质量为 `not_required` 或人工复核为 `accepted` 的文件中装配；待复核、重新解析和解析失败文件不能进入模型上下文。
+4. 客户证据必须包含文件、原文及页码/来源引用/坐标之一，标准证据必须包含条款和原文；任一侧缺失时不调用模型，直接返回 `unable_to_determine`。
+5. 模型必须返回 JSON 对象，包含结论、理由、置信度和双侧零基证据索引。低于规则阈值、索引越界、任一侧未引用或结构无效时强制返回 `unable_to_determine`，不得生成问题。
+6. 只有证据充分且有效引用的 `failed` 结果可以生成问题；问题证据只固化模型实际引用的片段。模型网络或供应商错误只终止当前执行，不使整个审核作业进入异常。
+
 ### 12.3 覆盖状态
 
 `executed_passed`, `executed_failed`, `missing_data`, `unable_to_determine`, `not_applicable`, `to_confirm`, `unsupported`, `execution_exception`

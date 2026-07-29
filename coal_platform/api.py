@@ -765,7 +765,7 @@ def list_execution_attempts(execution_id: str, request: Request) -> dict:
 
 @rule_executions_router.post("/{execution_id}/run", dependencies=[Depends(require_admin)])
 def run_execution(execution_id: str, request: Request) -> dict:
-    result = run_rule_execution(request.app.state.store, execution_id)
+    result = run_rule_execution(request.app.state.store, execution_id, model_gateway=request.app.state.model_gateway)
     if not result:
         raise HTTPException(status_code=404, detail="rule execution not found")
     return _ok(result, "rule execution completed")
@@ -1441,6 +1441,7 @@ def run_job(job_id: str, request: Request) -> dict:
             request.app.state.object_storage,
             request.app.state.ocr_backend,
             request.app.state.ocr_dpi,
+            request.app.state.model_gateway,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

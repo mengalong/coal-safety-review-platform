@@ -160,6 +160,7 @@ class DemoStore:
             "rule_2": self._rule("PRODUCT_MODEL_CONSISTENCY", "产品型号跨文件一致性", "normalized_compare", "严重"),
             "rule_3": self._rule("STANDARD_VERSION_STATUS", "引用标准有效性检查", "standard_status", "一般"),
             "rule_4": self._rule("AI_EVIDENCE_REQUIRED", "AI 判断必须具备标准依据", "evidence_required", "提示"),
+            "rule_5": self._rule("DYNAMIC_STANDARD_CLAUSE_REVIEW", "动态标准条款语义审核", "semantic_compare", "一般"),
         }
         self.rule_packs = {}
         for pack_config in DEFAULT_RULE_PACKS:
@@ -474,7 +475,7 @@ class DemoStore:
             "id": rule_id,
             "rule_code": code,
             "rule_name": name,
-            "rule_type": "deterministic",
+            "rule_type": "ai" if executor.get("executor_kind") == "ai" else "deterministic",
             "executor_definition_id": executor["id"],
             "executor_code": executor_code,
             "default_issue_category": "technical_compliance",
@@ -1966,6 +1967,8 @@ class DemoStore:
                 "input_payload": deepcopy(payload.get("input_payload") or item["input_snapshot"]),
                 "output_payload": deepcopy(payload.get("output_payload")),
                 "error_payload": deepcopy(payload.get("error_payload")),
+                "token_usage": deepcopy(payload.get("token_usage") or {}),
+                "model_version_id": payload.get("model_version_id"),
                 "elapsed_ms": payload.get("elapsed_ms"),
                 "created_at": _now(),
             }
@@ -1974,6 +1977,7 @@ class DemoStore:
             item["status"] = status
             item["result_payload"] = deepcopy(payload.get("output_payload"))
             item["elapsed_ms"] = payload.get("elapsed_ms")
+            item["confidence"] = payload.get("confidence")
             item["updated_at"] = _now()
             issue_payload = (payload.get("output_payload") or {}).get("issue")
             if issue_payload:
@@ -2168,7 +2172,8 @@ class DemoStore:
                     "subject_code": clause.get("clause_code"),
                     "subject_name": clause.get("title") or clause.get("clause_code"),
                     "applicability_status": "to_confirm",
-                    "execution_mode": "deterministic",
+                    "execution_mode": "ai",
+                    "input_profile": {"constraint_level": clause.get("constraint_level")},
                     "manual_reason": None,
                 }
                 if item["id"] not in existing_ids:

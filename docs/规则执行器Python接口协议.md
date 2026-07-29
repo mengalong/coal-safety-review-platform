@@ -182,6 +182,10 @@ class RuleExecutor(ABC):
 3. `execute` 不得直接写数据库，只能返回结果。
 4. AI 执行器必须输出结构化字段、证据和置信度。
 5. 确定性执行器返回“无法判断”时必须说明缺失条件或输入歧义。
+6. AI 执行前必须验证双侧证据充分性；证据不足时禁止调用模型，直接返回 `unable_to_determine`。
+7. AI 模型输出必须包含 `outcome`、`reason`、`confidence`、`customer_evidence_indexes` 和 `standard_evidence_indexes`。证据索引为零基且必须全部可解析。
+8. `failed` 结果只有在置信度达到规则阈值、双侧引用均非空且所有引用有效时才能生成问题；否则统一降级为 `unable_to_determine`。
+9. 模型超时、网络错误、熔断和无效结构属于单次执行的可处置结果，不得抛出到审核作业并破坏同轮其他规则状态。
 
 ## 5. 组合执行器协议
 

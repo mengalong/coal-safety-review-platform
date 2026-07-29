@@ -5,6 +5,7 @@ from celery import Celery
 from coal_platform.config import get_settings
 from coal_platform.database import SessionLocal
 from coal_platform.executor_runtime import process_queue_job
+from coal_platform.model_gateway import ModelGateway
 from coal_platform.ocr import build_ocr_backend
 from coal_platform.sqlalchemy_store import SqlAlchemyStore
 from coal_platform.storage import build_object_storage
@@ -25,7 +26,11 @@ def consume_queue_job(self, job_id: str) -> dict:
     store = SqlAlchemyStore(SessionLocal)
     try:
         object_storage.initialize()
-        result = process_queue_job(store, job_id, object_storage, ocr_backend, settings.ocr_dpi)
+        gateway = ModelGateway(store, settings=settings)
+        try:
+            result = process_queue_job(store, job_id, object_storage, ocr_backend, settings.ocr_dpi, gateway)
+        finally:
+            gateway.close()
         if result is None:
             raise ValueError("queue job not found")
         return result

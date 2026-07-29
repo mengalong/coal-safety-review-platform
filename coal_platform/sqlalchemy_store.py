@@ -317,6 +317,41 @@ class SqlAlchemyStore(DemoStore):
                 )
             session.flush()
 
+        dynamic_definition = session.scalar(
+            select(RuleDefinition).where(RuleDefinition.rule_code == "DYNAMIC_STANDARD_CLAUSE_REVIEW")
+        )
+        if not dynamic_definition:
+            semantic_executor = executor_definitions.get("semantic_compare")
+            semantic_version = executor_versions.get(semantic_executor.id) if semantic_executor else None
+            if semantic_executor and semantic_version:
+                dynamic_definition = RuleDefinition(
+                    rule_code="DYNAMIC_STANDARD_CLAUSE_REVIEW",
+                    rule_name="动态标准条款语义审核",
+                    rule_type="ai",
+                    executor_definition_id=semantic_executor.id,
+                    default_issue_category="standard_compliance",
+                    default_severity="一般",
+                    affects_suggested_conclusion=True,
+                    is_mandatory=True,
+                )
+                session.add(dynamic_definition)
+                session.flush()
+                session.add(
+                    RuleVersion(
+                        rule_definition_id=dynamic_definition.id,
+                        version_no="v1.0",
+                        executor_version_id=semantic_version.id,
+                        parameters={"minimum_confidence": 0.65},
+                        scope_files=[],
+                        priority=500,
+                        stage_code="standard_compliance",
+                        dependency_rule_codes=[],
+                        task_override_allowed=False,
+                        status="published",
+                    )
+                )
+                session.flush()
+
         if session.scalar(select(RulePack.id).limit(1)):
             return
         definitions = {item.rule_code: item for item in session.scalars(select(RuleDefinition))}
@@ -2490,6 +2525,15 @@ class SqlAlchemyStore(DemoStore):
             audit_run = AuditRun(round_id=round_item.id, run_no=latest_run_no + 1, status="queued")
             session.add(audit_run)
             session.flush()
+            model_config = session.scalar(
+                select(ModelConfig)
+                .where(ModelConfig.model_kind == "text", ModelConfig.status == "active")
+                .order_by(ModelConfig.created_at.desc())
+                .limit(1)
+            )
+            if model_config:
+                audit_run.model_snapshot_id = model_config.id
+                round_item.model_snapshot_id = model_config.id
             round_rules = session.scalars(
                 select(RoundRule).where(RoundRule.round_id == round_item.id, RoundRule.enabled.is_(True))
             ).all()
@@ -2511,6 +2555,62 @@ class SqlAlchemyStore(DemoStore):
                         status="pending",
                         input_snapshot=input_snapshot,
                         normalized_input_hash=normalized_input_hash,
+                    )
+                )
+            dynamic_definition = session.scalar(
+                select(RuleDefinition).where(RuleDefinition.rule_code == "DYNAMIC_STANDARD_CLAUSE_REVIEW")
+            )
+            dynamic_version = session.scalar(
+                select(RuleVersion)
+                .where(
+                    RuleVersion.rule_definition_id == dynamic_definition.id,
+                    RuleVersion.status == "published",
+                )
+                .order_by(RuleVersion.created_at.desc())
+                .limit(1)
+            ) if dynamic_definition else None
+            dynamic_items = session.scalars(
+                select(DynamicAuditItem).where(
+                    DynamicAuditItem.round_id == round_item.id,
+                    DynamicAuditItem.applicability_status == "applicable",
+                )
+            ).all()
+            for dynamic_item in dynamic_items:
+                if not dynamic_version:
+                    continue
+                customer_evidence: list[dict[str, Any]] = []
+                task_files = session.scalars(
+                    select(TaskFile).where(TaskFile.task_id == task.id, TaskFile.status == "parsed")
+                ).all()
+                for file_item in task_files:
+                    parse_summary = file_item.parse_summary or {}
+                    review_status = (parse_summary.get("quality_review") or {}).get("status")
+                    if not review_status and (parse_summary.get("quality_metrics") or {}).get("review_required") is False:
+                        review_status = "not_required"
+                    if review_status not in {"accepted", "not_required"}:
+                        continue
+                    blocks = session.scalars(
+                        select(ParsedBlock).where(ParsedBlock.file_id == file_item.id).order_by(ParsedBlock.page_no).limit(50)
+                    ).all()
+                    customer_evidence.extend(
+                        {"file_id": str(file_item.id), "page_no": block.page_no, "bbox": block.bbox, "excerpt_text": block.content_text, "confidence": float(block.confidence), "source_ref": block.source_ref}
+                        for block in blocks if block.content_text
+                    )
+                clause = session.get(StandardClause, dynamic_item.source_clause_id) if dynamic_item.source_clause_id else None
+                standard_evidence = [{"clause_id": str(clause.id), "clause_code": clause.clause_code, "excerpt_text": clause.original_text, "confidence": float(clause.confidence)}] if clause else []
+                provider = session.get(ModelProvider, model_config.provider_id) if model_config else None
+                model_snapshot = {"config_id": str(model_config.id), "provider_code": provider.provider_code if provider else None, "model_code": model_config.model_code, "credential_version": model_config.credential_version} if model_config else {}
+                dynamic_item.execution_mode = "ai"
+                dynamic_item.customer_evidence = {"items": customer_evidence, "count": len(customer_evidence)}
+                dynamic_item.standard_evidence = {"items": standard_evidence, "count": len(standard_evidence)}
+                input_snapshot = {"round_id": str(round_item.id), "dynamic_item": {"id": str(dynamic_item.id), "subject_code": dynamic_item.subject_code, "subject_name": dynamic_item.subject_name}, "evidence": customer_evidence, "standard_evidence": standard_evidence, "model_snapshot": model_snapshot, "trace_id": payload.get("_trace_id")}
+                session.add(
+                    RuleExecution(
+                        audit_run_id=audit_run.id, round_id=round_item.id,
+                        rule_version_id=dynamic_version.id, dynamic_item_id=dynamic_item.id,
+                        executor_version_id=dynamic_version.executor_version_id, status="pending",
+                        input_snapshot=input_snapshot,
+                        normalized_input_hash=sha256(json.dumps(input_snapshot, sort_keys=True).encode()).hexdigest(),
                     )
                 )
             job = QueueJob(
@@ -3023,6 +3123,8 @@ class SqlAlchemyStore(DemoStore):
                 input_payload=payload.get("input_payload") or execution.input_snapshot,
                 output_payload=payload.get("output_payload"),
                 error_payload=payload.get("error_payload"),
+                model_version_id=_uuid(payload.get("model_version_id")),
+                token_usage=payload.get("token_usage") or {},
                 started_at=datetime.now(UTC),
                 finished_at=datetime.now(UTC) if status != "running" else None,
                 status=status,
@@ -3031,7 +3133,27 @@ class SqlAlchemyStore(DemoStore):
             execution.status = status
             execution.result_payload = payload.get("output_payload")
             execution.elapsed_ms = payload.get("elapsed_ms")
+            execution.confidence = payload.get("confidence")
             execution.attempt_count = attempt_no
+            if execution.dynamic_item_id:
+                coverage = session.scalar(
+                    select(RoundStandardCoverage).where(
+                        RoundStandardCoverage.round_id == execution.round_id,
+                        RoundStandardCoverage.dynamic_item_id == execution.dynamic_item_id,
+                    )
+                )
+                if coverage:
+                    warnings = (payload.get("output_payload") or {}).get("warnings") or []
+                    coverage.coverage_status = {
+                        "succeeded": "executed_passed",
+                        "failed": "executed_failed",
+                        "unable_to_determine": (
+                            "missing_data" if "EVIDENCE_INSUFFICIENT" in warnings else "unable_to_determine"
+                        ),
+                        "exception": "execution_exception",
+                    }.get(status, coverage.coverage_status)
+                    coverage.reason = (payload.get("output_payload") or {}).get("description")
+                    coverage.publish_check_status = "passed" if status == "succeeded" else "review_required"
             issue_payload = (payload.get("output_payload") or {}).get("issue")
             if issue_payload:
                 issue_code = issue_payload.get("issue_code") or f"EXEC-{str(execution.id)[:8]}"
@@ -3267,7 +3389,7 @@ class SqlAlchemyStore(DemoStore):
                         subject_code=clause.clause_code,
                         subject_name=clause.title or clause.clause_code,
                         applicability_status="to_confirm",
-                        execution_mode="deterministic",
+                        execution_mode="ai",
                         input_profile={"constraint_level": clause.constraint_level},
                     )
                     session.add(dynamic_item)
@@ -3318,6 +3440,7 @@ class SqlAlchemyStore(DemoStore):
                     "applicability_status": item.applicability_status, "execution_mode": item.execution_mode,
                     "customer_evidence": item.customer_evidence, "standard_evidence": item.standard_evidence,
                     "manual_state": item.manual_state,
+                    "input_profile": item.input_profile,
                 }
                 for item in items
             ]

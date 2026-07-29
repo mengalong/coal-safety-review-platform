@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Mapping
@@ -7,6 +8,7 @@ from time import monotonic
 from typing import Any
 
 from coal_platform.document_parser import parse_document
+from coal_platform.model_gateway import ModelGateway, ModelGatewayError
 from coal_platform.ocr import OCRBackend
 from coal_platform.storage import ObjectStorage
 from coal_platform.store_protocol import PlatformStore
@@ -68,7 +70,64 @@ def evaluate_builtin(rule: Mapping[str, Any], parameters: Mapping[str, Any], pay
     return result
 
 
-def run_rule_execution(store: PlatformStore, execution_id: str, input_payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
+def _valid_customer_evidence(entry: Mapping[str, Any]) -> bool:
+    return bool(entry.get("file_id") and entry.get("excerpt_text") and (entry.get("page_no") or entry.get("source_ref") or entry.get("bbox")))
+
+
+def _valid_standard_evidence(entry: Mapping[str, Any]) -> bool:
+    return bool(entry.get("clause_id") and entry.get("excerpt_text"))
+
+
+def evaluate_ai(
+    rule: Mapping[str, Any], parameters: Mapping[str, Any], payload: Mapping[str, Any], gateway: ModelGateway
+) -> dict[str, Any]:
+    customer = [item for item in payload.get("evidence", []) if isinstance(item, Mapping) and _valid_customer_evidence(item)]
+    standard = [item for item in payload.get("standard_evidence", []) if isinstance(item, Mapping) and _valid_standard_evidence(item)]
+    sufficiency = {
+        "customer_evidence_count": len(customer),
+        "standard_evidence_count": len(standard),
+        "sufficient": bool(customer and standard),
+    }
+    if not sufficiency["sufficient"]:
+        return {"outcome": "unable_to_determine", "description": "客户证据或标准依据不足", "evidence_sufficiency": sufficiency, "warnings": ["EVIDENCE_INSUFFICIENT"]}
+    model = payload.get("model_snapshot") or {}
+    if not model.get("config_id"):
+        return {"outcome": "unable_to_determine", "description": "未配置可用文本模型", "evidence_sufficiency": sufficiency, "warnings": ["MODEL_NOT_CONFIGURED"]}
+    prompt_payload = {
+        "audit_item": payload.get("dynamic_item") or {"rule_code": rule.get("rule_code"), "rule_name": rule.get("rule_name")},
+        "customer_evidence": customer,
+        "standard_evidence": standard,
+        "requirements": {
+            "outcome": ["passed", "failed", "unable_to_determine"],
+            "minimum_confidence": float(parameters.get("minimum_confidence", 0.65)),
+            "citation_indexes_are_zero_based": True,
+        },
+    }
+    messages = [
+        {"role": "system", "content": "你是煤矿安标技术审核执行器。只输出 JSON，不补充未在证据中的事实。JSON 字段必须包含 outcome、reason、confidence、customer_evidence_indexes、standard_evidence_indexes。"},
+        {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)},
+    ]
+    response = gateway.chat(model["config_id"], messages, trace_id=payload.get("trace_id"), response_format={"type": "json_object"}, temperature=0)
+    decision = json.loads(response["content"])
+    outcome = decision.get("outcome")
+    confidence = float(decision.get("confidence", 0))
+    customer_indexes = decision.get("customer_evidence_indexes") or []
+    standard_indexes = decision.get("standard_evidence_indexes") or []
+    citations_valid = all(isinstance(index, int) and 0 <= index < len(customer) for index in customer_indexes) and all(isinstance(index, int) and 0 <= index < len(standard) for index in standard_indexes)
+    minimum_confidence = float(parameters.get("minimum_confidence", 0.65))
+    if outcome not in {"passed", "failed", "unable_to_determine"} or confidence < minimum_confidence or not customer_indexes or not standard_indexes or not citations_valid:
+        return {"outcome": "unable_to_determine", "description": "模型输出置信度不足或证据引用无效", "confidence": confidence, "evidence_sufficiency": {**sufficiency, "citations_valid": citations_valid}, "warnings": ["MODEL_DECISION_CONSTRAINED"], "model_request_id": response.get("request_id"), "token_usage": response.get("usage") or {}}
+    selected_customer = [customer[index] for index in customer_indexes]
+    selected_standard = [standard[index] for index in standard_indexes]
+    result = {"outcome": outcome, "description": str(decision.get("reason") or "模型未提供理由"), "confidence": confidence, "evidence_sufficiency": {**sufficiency, "citations_valid": True}, "customer_evidence": selected_customer, "standard_evidence": selected_standard, "model_request_id": response.get("request_id"), "token_usage": response.get("usage") or {}}
+    if outcome == "failed":
+        result["issue"] = _issue(rule, result["description"], {"evidence": selected_customer, "standard_evidence": selected_standard})
+        subject_code = str((payload.get("dynamic_item") or {}).get("subject_code") or "GENERAL")
+        result["issue"]["issue_code"] = f"RULE-{rule.get('rule_code', 'UNKNOWN')}-{subject_code}"
+    return result
+
+
+def run_rule_execution(store: PlatformStore, execution_id: str, input_payload: dict[str, Any] | None = None, model_gateway: ModelGateway | None = None) -> dict[str, Any] | None:
     execution = store.get_rule_execution(execution_id)
     if not execution:
         return None
@@ -81,11 +140,25 @@ def run_rule_execution(store: PlatformStore, execution_id: str, input_payload: d
     payload = input_payload or execution.get("input_snapshot") or {}
     started = monotonic()
     try:
-        result = evaluate_builtin({**rule, "executor_code": version.get("executor_code")}, version.get("parameters") or {}, payload)
+        if version.get("executor_code") == "semantic_compare":
+            if model_gateway is None:
+                result = {"outcome": "unable_to_determine", "description": "模型网关不可用", "warnings": ["MODEL_GATEWAY_UNAVAILABLE"]}
+            else:
+                try:
+                    result = evaluate_ai(rule, version.get("parameters") or {}, payload, model_gateway)
+                except ModelGatewayError as exc:
+                    result = {"outcome": "unable_to_determine", "description": "模型调用失败，已转人工判断", "warnings": [exc.code]}
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    result = {"outcome": "unable_to_determine", "description": "模型结构化输出无效，已转人工判断", "warnings": ["MODEL_INVALID_DECISION"]}
+        else:
+            result = evaluate_builtin({**rule, "executor_code": version.get("executor_code")}, version.get("parameters") or {}, payload)
         status = "succeeded" if result["outcome"] == "passed" else result["outcome"]
         return store.record_execution_attempt(execution_id, {
             "status": status, "attempt_kind": "normal", "input_payload": payload,
             "output_payload": result, "elapsed_ms": round((monotonic() - started) * 1000),
+            "token_usage": result.get("token_usage"),
+            "confidence": result.get("confidence"),
+            "model_version_id": (payload.get("model_snapshot") or {}).get("config_id"),
         })
     except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
         return store.record_execution_attempt(execution_id, {
@@ -101,6 +174,7 @@ def process_queue_job(
     object_storage: ObjectStorage | None = None,
     ocr_backend: OCRBackend | None = None,
     ocr_dpi: int = 200,
+    model_gateway: ModelGateway | None = None,
 ) -> dict[str, Any] | None:
     job = store.get_queue_job(job_id)
     if not job:
@@ -182,7 +256,7 @@ def process_queue_job(
                 item for item in (store.list_rule_executions(payload["round_id"]) or [])
                 if item["audit_run_id"] == payload["audit_run_id"] and item["status"] == "pending"
             ]
-            results = [run_rule_execution(store, item["id"]) for item in executions]
+            results = [run_rule_execution(store, item["id"], model_gateway=model_gateway) for item in executions]
             exceptions = sum(1 for item in results if item and item.get("status") == "exception")
             summary = {"total": len(results), "exceptions": exceptions}
             store.complete_audit_run(payload["audit_run_id"], {"status": "failed" if exceptions else "succeeded", "summary": summary})

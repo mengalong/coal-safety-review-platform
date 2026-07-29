@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
@@ -8,7 +9,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from coal_platform.database import Base
-from coal_platform.executor_runtime import process_queue_job
+from coal_platform.executor_runtime import process_queue_job, run_rule_execution
 from coal_platform.main import create_app
 from coal_platform.models import (
     AuditRun,
@@ -368,6 +369,42 @@ def test_database_store_persists_standard_catalog_and_round_snapshot(tmp_path: P
         assert session.scalar(select(func.count()).select_from(RoundStandard)) == 2
 
 
+def test_dynamic_audit_item_executes_real_ai_contract_with_model_snapshot(tmp_path: Path) -> None:
+    store, _factory = _store(tmp_path / "dynamic-ai.db")
+    reviewer = store.authenticate("liming", DemoStore.demo_password)
+    assert reviewer
+    model = store.create_model_config({"provider_code": "qianfan", "provider_name": "百度千帆", "base_url": "https://qianfan.test/v2", "model_code": "deepseek-v4-pro", "model_kind": "text", "api_key": "provider-secret"})
+    assert model
+    task = store.create_task({"owner_user_id": reviewer["id"], "_operator_user_id": reviewer["id"]})
+    files = store.add_task_files(task["id"], [{"file_name": "manual.txt", "file_type": "txt", "content_type": "text/plain", "file_size": 16, "sha256": "e" * 64, "storage_key": f"tasks/{task['id']}/manual.txt", "_operator_user_id": reviewer["id"]}])
+    assert files
+    parsed = store.complete_task_file_parse(files[0]["id"], [{"page_no": 1, "block_type": "line", "content_text": "额定功率 55 kW", "confidence": 0.98, "source_ref": "txt:line:1"}], {"parser": "text", "page_count": 1})
+    assert parsed and parsed["parse_summary"]["quality_review"]["status"] == "not_required"
+    standard_version = store.list_standards()[0]["versions"][0]
+    selected = store.add_standard_to_round(task["current_round_id"], {"standard_version_id": standard_version["id"], "_operator_user_id": reviewer["id"]})
+    assert selected
+    store.confirm_round_standard(task["current_round_id"], selected["id"], {"_operator_user_id": reviewer["id"]})
+    dynamic = store.list_dynamic_items(task["current_round_id"])[0]
+    store.decide_dynamic_item(task["current_round_id"], dynamic["id"], "applicable", {"reason": "适用"})
+    started = store.start_audit(task["current_round_id"], {"_operator_user_id": reviewer["id"], "_trace_id": "dynamic-ai"})
+    assert started
+    execution = next(item for item in store.list_rule_executions(task["current_round_id"]) if item["dynamic_item_id"] == dynamic["id"])
+    assert execution["input_snapshot"]["model_snapshot"]["credential_version"] == 1
+    assert execution["input_snapshot"]["evidence"][0]["source_ref"] == "txt:line:1"
+
+    class Gateway:
+        def chat(self, *_args, **_kwargs):
+            return {"content": json.dumps({"outcome": "passed", "reason": "证据满足条款", "confidence": 0.9, "customer_evidence_indexes": [0], "standard_evidence_indexes": [0]}), "request_id": "request-1", "usage": {"total_tokens": 10}}
+
+    completed = run_rule_execution(store, execution["id"], model_gateway=Gateway())
+    assert completed and completed["status"] == "succeeded"
+    assert completed["confidence"] == 0.9
+    coverage = store.list_coverage(task["current_round_id"])
+    assert coverage and coverage["summary"]["executed_passed"] == 1
+    attempts = store.list_execution_attempts(execution["id"])
+    assert attempts and attempts[0]["token_usage"]["total_tokens"] == 10
+
+
 def test_database_store_versions_parse_revisions_and_compares_clauses(tmp_path: Path) -> None:
     store, factory = _store(tmp_path / "standard-revisions.db")
     admin = store.authenticate("admin", DemoStore.demo_password)
@@ -433,7 +470,7 @@ def test_database_store_persists_executor_and_rule_versions(tmp_path: Path) -> N
     executors = store.list_executors()
     rules = store.list_rules()
     assert len(executors) == 9
-    assert len(rules) == 4
+    assert len(rules) == 5
     assert executors[0]["versions"]
     assert rules[0]["versions"]
 
@@ -468,8 +505,8 @@ def test_database_store_persists_executor_and_rule_versions(tmp_path: Path) -> N
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(ExecutorDefinition)) == 9
         assert session.scalar(select(func.count()).select_from(ExecutorVersion)) == 9
-        assert session.scalar(select(func.count()).select_from(RuleDefinition)) == 5
-        assert session.scalar(select(func.count()).select_from(RuleVersion)) == 5
+        assert session.scalar(select(func.count()).select_from(RuleDefinition)) == 6
+        assert session.scalar(select(func.count()).select_from(RuleVersion)) == 6
 
 
 def test_database_store_persists_rule_packs_and_inherited_round_snapshot(tmp_path: Path) -> None:
