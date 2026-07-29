@@ -1,5 +1,8 @@
 from io import BytesIO
-from zipfile import ZipFile
+
+import pytest
+from docx import Document
+from pypdf import PdfReader
 
 from coal_platform.report_renderer import render_docx, render_pdf
 
@@ -14,9 +17,14 @@ def test_report_renderers_generate_real_docx_and_pdf_bytes() -> None:
         "issues": [{"title": "资料缺失", "severity": "一般", "description": "缺少试验报告"}],
     }
     docx = render_docx(content)
-    with ZipFile(BytesIO(docx)) as archive:
-        assert "word/document.xml" in archive.namelist()
-        assert "资料缺失" in archive.read("word/document.xml").decode()
+    document = Document(BytesIO(docx))
+    assert document.sections[0].page_width.mm == pytest.approx(210, abs=0.1)
+    assert any("煤矿安标技术文档审核报告" in paragraph.text for paragraph in document.paragraphs)
+    assert any("资料缺失" in cell.text for table in document.tables for row in table.rows for cell in row.cells)
     pdf = render_pdf(content)
-    assert pdf.startswith(b"%PDF-1.4")
-    assert b"xref" in pdf and pdf.endswith(b"%%EOF\n")
+    assert pdf.startswith(b"%PDF-")
+    reader = PdfReader(BytesIO(pdf))
+    assert len(reader.pages) == 1
+    text = reader.pages[0].extract_text()
+    assert "煤矿安标技术文档审核报告" in text
+    assert "资料缺失" in text

@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,6 +45,28 @@ class Settings(BaseSettings):
     ]
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="COAL_")
+
+    @model_validator(mode="after")
+    def validate_production_baseline(self) -> "Settings":
+        if self.environment != "production":
+            return self
+        errors = []
+        if self.seed_demo_data:
+            errors.append("COAL_SEED_DEMO_DATA must be false")
+        if self.store_backend != "database" or self.database_url.startswith("sqlite"):
+            errors.append("COAL_DATABASE_URL must use the production database")
+        if self.storage_backend != "minio":
+            errors.append("COAL_STORAGE_BACKEND must be minio")
+        if len(self.secret_key) < 32 or self.secret_key.startswith("development-only"):
+            errors.append("COAL_SECRET_KEY must be a random value of at least 32 characters")
+        model_secret = self.model_secret_key.get_secret_value()
+        if len(model_secret) < 32 or model_secret.startswith("development-only"):
+            errors.append("COAL_MODEL_SECRET_KEY must be a random value of at least 32 characters")
+        if any("localhost" in origin or "127.0.0.1" in origin for origin in self.cors_origins):
+            errors.append("COAL_CORS_ORIGINS must not contain local development origins")
+        if errors:
+            raise ValueError("invalid production configuration: " + "; ".join(errors))
+        return self
 
 
 @lru_cache(maxsize=1)
