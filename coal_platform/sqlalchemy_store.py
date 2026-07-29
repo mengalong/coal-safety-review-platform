@@ -2440,6 +2440,24 @@ class SqlAlchemyStore(DemoStore):
                 query = query.where(AuditIssue.round_id == round_uuid)
             return [self._issue_dict(session, item) for item in session.scalars(query)]
 
+    def create_manual_issue(self, round_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        round_uuid = _uuid(round_id)
+        if not round_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            if not session.get(AuditRound, round_uuid):
+                return None
+            count = session.scalar(select(func.count(AuditIssue.id)).where(AuditIssue.round_id == round_uuid)) or 0
+            issue = AuditIssue(round_id=round_uuid, issue_code=f"MANUAL-{count + 1:04d}", title=payload["title"], description=payload["description"], category_code=payload["category_code"], severity=payload.get("severity", "一般"), status="open", system_conclusion="failed", affects_conclusion=payload.get("affects_conclusion", False))
+            session.add(issue)
+            session.flush()
+            session.add(IssueSource(issue_id=issue.id, source_type="manual", source_status="confirmed", source_payload={"operator_user_id": payload.get("_operator_user_id")}))
+            for evidence in payload.get("evidence", []):
+                session.add(IssueEvidence(issue_id=issue.id, evidence_type=evidence.get("evidence_type", "customer"), file_id=_uuid(evidence.get("file_id")), clause_id=_uuid(evidence.get("clause_id")), page_no=evidence.get("page_no"), bbox=evidence.get("bbox"), excerpt_text=evidence.get("excerpt_text"), artifact_uri=evidence.get("artifact_uri"), confidence=evidence.get("confidence")))
+            self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="audit_issue", entity_id=issue.id, action_code="issue.manual_create", after_snapshot=self._issue_dict(session, issue), trace_id=payload.get("_trace_id"))
+            session.flush()
+            return self._issue_dict(session, issue)
+
     @staticmethod
     def _report_dict(report: Report) -> dict[str, Any]:
         return {

@@ -256,6 +256,7 @@
 | `GET` | `/api/v1/rule-executions/{execution_id}` | 执行详情 |
 | `GET` | `/api/v1/rule-executions/{execution_id}/attempts` | 尝试记录 |
 | `GET` | `/api/v1/issues` | 问题列表 |
+| `POST` | `/api/v1/rounds/{round_id}/issues` | 人工新增问题并挂接证据 |
 | `PATCH` | `/api/v1/issues/{issue_id}` | 修改问题 |
 | `POST` | `/api/v1/issues/{issue_id}/confirm` | 确认问题 |
 | `POST` | `/api/v1/issues/{issue_id}/reject` | 驳回问题 |

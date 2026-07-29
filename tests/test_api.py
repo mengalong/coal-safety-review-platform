@@ -180,6 +180,22 @@ def test_admin_can_manage_categories_templates_and_system_parameters() -> None:
         assert parameter.json()["data"]["param_value"]["value"] == 5
 
 
+def test_reviewer_can_create_manual_issue_with_evidence() -> None:
+    with _client() as client:
+        headers = _login(client)
+        task = client.post("/api/v1/tasks", headers=headers, json={}).json()["data"]
+        created = client.post(
+            f"/api/v1/rounds/{task['current_round_id']}/issues",
+            headers=headers,
+            json={"title": "人工发现问题", "description": "资料页码与目录不一致", "category_code": "document_completeness", "evidence": [{"evidence_type": "customer", "page_no": 3, "excerpt_text": "目录缺少章节"}]},
+        )
+        assert created.status_code == 201
+        issue = created.json()["data"]
+        assert issue["issue_code"] == "MANUAL-0001"
+        assert issue["sources"][0]["source_type"] == "manual"
+        assert issue["evidence"][0]["page_no"] == 3
+
+
 def test_reviewer_cannot_access_admin_user_list() -> None:
     with _client() as client:
         reviewer_headers = _login(client)

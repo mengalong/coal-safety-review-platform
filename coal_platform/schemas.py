@@ -157,6 +157,15 @@ class IssueUpdateRequest(BaseModel):
     reason: str | None = None
 
 
+class ManualIssueCreateRequest(BaseModel):
+    title: str
+    description: str
+    category_code: str
+    severity: str = "一般"
+    affects_conclusion: bool = False
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class PageRequest(BaseModel):
     page: int = 1
     page_size: int = 20

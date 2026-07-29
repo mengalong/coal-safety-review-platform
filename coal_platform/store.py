@@ -1375,6 +1375,16 @@ class DemoStore:
             items = [item for item in items if item["round_id"] == round_id]
         return [deepcopy(item) for item in items]
 
+    def create_manual_issue(self, round_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            task, round_item = self._find_round(round_id)
+            if not task or not round_item:
+                return None
+            issue_code = f"MANUAL-{sum(1 for item in self.issues.values() if item.get('round_id') == round_id) + 1:04d}"
+            issue = {"id": str(uuid4()), "round_id": round_id, "issue_code": issue_code, "title": payload["title"], "description": payload["description"], "category_code": payload["category_code"], "severity": payload.get("severity", "一般"), "status": "open", "system_conclusion": "failed", "manual_conclusion": None, "affects_conclusion": payload.get("affects_conclusion", False), "manual_reason": payload.get("reason"), "sources": [{"id": str(uuid4()), "source_type": "manual", "source_status": "confirmed", "source_payload": {"operator_user_id": payload.get("_operator_user_id")}}], "evidence": [dict(item, id=str(uuid4()), issue_id=None, evidence_type=item.get("evidence_type", "customer")) for item in payload.get("evidence", [])], "created_at": _now(), "updated_at": _now()}
+            self.issues[issue["id"]] = issue
+            return deepcopy(issue)
+
     def get_issue(self, issue_id: str) -> dict | None:
         item = self.issues.get(issue_id)
         return deepcopy(item) if item else None

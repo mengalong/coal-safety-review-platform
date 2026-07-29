@@ -24,6 +24,7 @@ from coal_platform.schemas import (
     LocalRerunRequest,
     LoginRequest,
     LoginResponse,
+    ManualIssueCreateRequest,
     ModelConfigRequest,
     ModelConfigUpdateRequest,
     ReportCreateRequest,
@@ -1106,6 +1107,22 @@ def list_issues(request: Request, round_id: str | None = None) -> dict:
                 visible.append(item)
         items = visible
     return _ok(items)
+
+
+@rounds_router.post("/{round_id}/issues")
+def create_manual_issue(round_id: str, payload: ManualIssueCreateRequest, request: Request) -> JSONResponse:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if task:
+        _ensure_task_access(request, task)
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    issue = request.app.state.store.create_manual_issue(round_id, data)
+    if not issue:
+        raise HTTPException(status_code=404, detail="round not found")
+    return JSONResponse(status_code=201, content=_ok(issue, "manual issue created"))
 
 
 @issues_router.patch("/{issue_id}")
