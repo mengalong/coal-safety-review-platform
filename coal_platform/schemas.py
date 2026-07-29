@@ -199,6 +199,10 @@ class ModelConfigUpdateRequest(BaseModel):
     status: str | None = None
 
 
+class ModelConnectionTestRequest(BaseModel):
+    pass
+
+
 class IssueCategoryRequest(BaseModel):
     code: str
     name: str

@@ -27,6 +27,8 @@ API 文档：`http://127.0.0.1:8000/api/docs`
 重启后仍然保留。设置 `COAL_STORE_BACKEND=demo` 可临时切回纯内存演示数据。
 本机默认关闭 OCR；安装 Tesseract 及简体中文语言包后，设置
 `COAL_OCR_BACKEND=tesseract` 可启用扫描 PDF 的 CPU OCR。
+百度千帆模型通过 `COAL_QIANFAN_API_KEY` 注入；模型凭据使用 `COAL_MODEL_SECRET_KEY` 加密后入库。
+生产环境必须分别使用随机强密钥，并通过密钥管理系统注入，不能提交 `.env`。
 
 原型通过真实登录、当前用户、任务列表和退出接口连接本地 API。先启动 API，再启动原型静态服务：
 

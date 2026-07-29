@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     ocr_timeout_seconds: int = Field(default=120, ge=1, le=600)
     ocr_minimum_confidence: float = Field(default=0.35, ge=0, le=1)
     secret_key: str = "development-only-change-this-secret-key"
+    model_secret_key: SecretStr = SecretStr("development-only-change-this-model-secret-key")
+    qianfan_api_key: SecretStr | None = None
+    qianfan_base_url: str = "https://qianfan.baidubce.com/v2"
+    model_max_retries: int = Field(default=2, ge=0, le=5)
+    model_max_response_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+    model_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
+    model_circuit_recovery_seconds: int = Field(default=30, ge=1, le=600)
     access_token_expire_minutes: int = 480
     jwt_algorithm: str = "HS256"
     log_level: str = "INFO"

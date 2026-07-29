@@ -553,9 +553,30 @@ class ModelConfig(Base, IdMixin, AuditMixin):
     model_code: Mapped[str] = mapped_column(String(128), nullable=False)
     model_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     api_key_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    credential_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    key_rotated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     concurrency_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+
+
+class ModelCallLog(Base, IdMixin):
+    __tablename__ = "model_call_log"
+
+    model_config_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("model_config.id"), nullable=False, index=True
+    )
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    trace_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    provider_request_id: Mapped[str | None] = mapped_column(String(128))
+    token_usage: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class PromptTemplate(Base, IdMixin, AuditMixin):

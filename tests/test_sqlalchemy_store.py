@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +15,8 @@ from coal_platform.models import (
     AuthSession,
     ExecutorDefinition,
     ExecutorVersion,
+    ModelCallLog,
+    ModelConfig,
     OperationLog,
     ParsedBlock,
     QueueJob,
@@ -95,6 +98,29 @@ def test_database_store_persists_task_round_file_and_operation_logs(tmp_path: Pa
 
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(OperationLog)) == 3
+
+
+def test_database_store_encrypts_rotates_and_audits_model_credentials(tmp_path: Path) -> None:
+    store, factory = _store(tmp_path / "model-security.db")
+    model = store.create_model_config({"provider_code": "qianfan", "provider_name": "百度千帆", "base_url": "https://qianfan.test/v2", "model_code": "deepseek-v4-pro", "model_kind": "text", "api_key": "first-provider-secret"})
+    assert model and model["credential_version"] == 1
+
+    with factory() as session:
+        stored = session.get(ModelConfig, UUID(model["id"]))
+        assert stored
+        assert stored.api_key_ciphertext.startswith("aesgcm:v1:")
+        assert "first-provider-secret" not in stored.api_key_ciphertext
+
+    runtime = store.get_model_runtime_config(model["id"])
+    assert runtime and runtime["api_key"] == "first-provider-secret"
+    rotated = store.update_model_config(model["id"], {"api_key": "second-provider-secret"})
+    assert rotated and rotated["credential_version"] == 2
+    assert store.get_model_runtime_config(model["id"])["api_key"] == "second-provider-secret"
+
+    store.record_model_call({"model_config_id": model["id"], "request_id": "model-call-1", "trace_id": "trace-1", "operation": "chat", "status": "succeeded", "attempt_count": 1, "latency_ms": 25, "http_status": 200, "provider_request_id": "provider-1", "token_usage": {"total_tokens": 8}})
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(ModelCallLog)) == 1
+    assert store.list_model_call_logs()[0]["token_usage"]["total_tokens"] == 8
 
 
 def test_database_store_persists_document_parse_blocks_and_audit_log(tmp_path: Path) -> None:

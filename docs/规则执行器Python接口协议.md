@@ -258,6 +258,14 @@ class ExecutorRegistry:
 | `UNIT_MISMATCH` | 单位维度不匹配 |
 | `EVIDENCE_INSUFFICIENT` | 证据不足 |
 | `MODEL_TIMEOUT` | 模型超时 |
+| `MODEL_NETWORK_ERROR` | 模型网络错误 |
+| `MODEL_CIRCUIT_OPEN` | 模型熔断中 |
+| `MODEL_INVALID_RESPONSE` | 模型响应结构无效 |
+
+AI 执行器不得直接创建 HTTP 客户端，只能使用平台注入的统一模型网关。网关提供 `chat`、
+`multimodal_chat`、`embed` 和 `rerank` 四个方法，并统一负责 Bearer 鉴权、超时、并发限制、
+指数退避重试、熔断、响应大小限制和脱敏调用审计。执行器输出中只允许引用平台 `request_id`，
+禁止携带 API Key、授权头或供应商原始错误体。
 | `MODEL_SCHEMA_ERROR` | AI 输出结构错误 |
 | `EXECUTOR_RUNTIME_ERROR` | 执行器内部异常 |
 | `SNAPSHOT_EXPIRED` | 输入快照已过期 |

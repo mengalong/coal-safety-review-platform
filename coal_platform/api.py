@@ -13,6 +13,7 @@ from coal_platform.auth import access_token_expires_at, create_access_token, req
 from coal_platform.config import get_settings
 from coal_platform.document_parser import MAX_FILE_BYTES, DocumentParseError, render_pdf_region
 from coal_platform.executor_runtime import process_queue_job, run_rule_execution
+from coal_platform.model_gateway import ModelGatewayError
 from coal_platform.report_renderer import render_docx, render_pdf
 from coal_platform.request_context import get_trace_id
 from coal_platform.rule_engine import FIXED_AUDIT_STAGES, RuleConfigurationError
@@ -1332,6 +1333,21 @@ def update_model(config_id: str, payload: ModelConfigUpdateRequest, request: Req
     if not model:
         raise HTTPException(status_code=404, detail="model configuration not found")
     return _ok(model)
+
+
+@settings_router.post("/models/{config_id}/test", dependencies=[Depends(require_admin)])
+def test_model_connection(config_id: str, request: Request) -> dict:
+    try:
+        result = request.app.state.model_gateway.test_connection(config_id, trace_id=get_trace_id())
+    except ModelGatewayError as exc:
+        status_code = 404 if exc.code == "MODEL_CONFIG_NOT_FOUND" else 409 if exc.code == "MODEL_CONFIG_DISABLED" else 502
+        raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+    return _ok(result, "model connection succeeded")
+
+
+@settings_router.get("/model-call-logs", dependencies=[Depends(require_admin)])
+def list_model_call_logs(request: Request, limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    return _ok(request.app.state.store.list_model_call_logs(limit))
 
 
 @settings_router.get("/system-parameters", dependencies=[Depends(require_admin)])

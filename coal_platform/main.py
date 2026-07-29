@@ -10,6 +10,7 @@ from coal_platform import __version__
 from coal_platform.api import register_routers
 from coal_platform.config import get_settings
 from coal_platform.database import SessionLocal
+from coal_platform.model_gateway import ModelGateway, bootstrap_qianfan_models
 from coal_platform.ocr import OCRBackend, build_ocr_backend
 from coal_platform.request_context import get_trace_id, trace_id_context
 from coal_platform.sqlalchemy_store import SqlAlchemyStore
@@ -36,6 +37,7 @@ def create_app(
     store: PlatformStore | None = None,
     object_storage: ObjectStorage | None = None,
     ocr_backend: OCRBackend | None = None,
+    model_gateway: ModelGateway | None = None,
 ) -> FastAPI:
     settings = get_settings()
     active_store = store
@@ -43,12 +45,15 @@ def create_app(
         active_store = SqlAlchemyStore(SessionLocal) if settings.store_backend == "database" else DemoStore.seed()
     active_storage = object_storage or build_object_storage(settings)
     active_ocr = ocr_backend or build_ocr_backend(settings)
+    active_model_gateway = model_gateway or ModelGateway(active_store, settings=settings)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         active_store.initialize(seed_demo_data=settings.seed_demo_data)
         active_storage.initialize()
+        bootstrap_qianfan_models(active_store, settings)
         yield
+        active_model_gateway.close()
 
     app = FastAPI(
         title=settings.app_name,
@@ -98,6 +103,7 @@ def create_app(
     app.state.store = active_store
     app.state.object_storage = active_storage
     app.state.ocr_backend = active_ocr
+    app.state.model_gateway = active_model_gateway
     app.state.ocr_dpi = settings.ocr_dpi
     register_routers(app, prefix=settings.api_v1_prefix)
     return app

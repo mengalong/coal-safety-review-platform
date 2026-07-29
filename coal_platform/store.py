@@ -115,6 +115,8 @@ class DemoStore:
         self.reports: dict[str, dict] = {}
         self.issues: dict[str, dict] = {}
         self.model_configs: dict[str, dict] = {}
+        self._model_api_keys: dict[str, str] = {}
+        self.model_call_logs: list[dict] = []
         self.system_parameters: dict[str, dict] = {}
         self._seed()
 
@@ -1549,8 +1551,10 @@ class DemoStore:
         with self._lock:
             if any(item.get("model_code") == payload["model_code"] for item in self.model_configs.values()):
                 return None
-            item = {"id": str(uuid4()), "provider_code": payload["provider_code"], "provider_name": payload["provider_name"], "base_url": payload["base_url"], "model_code": payload["model_code"], "model_kind": payload["model_kind"], "api_key_configured": bool(payload.get("api_key")), "status": "active", "timeout_seconds": payload.get("timeout_seconds", 60), "concurrency_limit": payload.get("concurrency_limit", 1), "created_at": _now()}
+            now = _now()
+            item = {"id": str(uuid4()), "provider_code": payload["provider_code"], "provider_name": payload["provider_name"], "base_url": payload["base_url"], "model_code": payload["model_code"], "model_kind": payload["model_kind"], "api_key_configured": bool(payload.get("api_key")), "credential_version": 1, "key_rotated_at": now, "status": "active", "timeout_seconds": payload.get("timeout_seconds", 60), "concurrency_limit": payload.get("concurrency_limit", 1), "created_at": now}
             self.model_configs[item["id"]] = item
+            self._model_api_keys[item["id"]] = payload["api_key"]
             return deepcopy(item)
 
     def update_model_config(self, config_id: str, payload: dict) -> dict | None:
@@ -1563,8 +1567,23 @@ class DemoStore:
                     item[key] = payload[key]
             if payload.get("api_key"):
                 item["api_key_configured"] = True
+                item["credential_version"] = item.get("credential_version", 1) + 1
+                item["key_rotated_at"] = _now()
+                self._model_api_keys[config_id] = payload["api_key"]
             item["updated_at"] = _now()
             return deepcopy(item)
+
+    def get_model_runtime_config(self, config_id: str) -> dict | None:
+        item = self.model_configs.get(config_id)
+        if not item or config_id not in self._model_api_keys:
+            return None
+        return {**deepcopy(item), "api_key": self._model_api_keys[config_id]}
+
+    def record_model_call(self, payload: dict) -> None:
+        self.model_call_logs.append({"id": str(uuid4()), **deepcopy(payload), "created_at": _now()})
+
+    def list_model_call_logs(self, limit: int = 100) -> list[dict]:
+        return [deepcopy(item) for item in reversed(self.model_call_logs[-limit:])]
 
     def list_system_parameters(self) -> list[dict]:
         return self.list_config_entries("global")

@@ -321,6 +321,8 @@
 | `GET` | `/api/v1/settings/models` | 模型配置 |
 | `POST` | `/api/v1/settings/models` | 新增模型配置 |
 | `PATCH` | `/api/v1/settings/models/{config_id}` | 更新模型配置状态和运行参数 |
+| `POST` | `/api/v1/settings/models/{config_id}/test` | 管理员发起最小请求验证模型连通性 |
+| `GET` | `/api/v1/settings/model-call-logs` | 查询脱敏模型调用审计，支持 `limit` |
 | `GET` | `/api/v1/settings/issue-categories` | 问题分类 |
 | `POST` | `/api/v1/settings/issue-categories` | 新增或更新问题分类 |
 | `GET` | `/api/v1/settings/report-templates` | 报告模板 |
@@ -338,6 +340,24 @@
 作业控制语义：
 
 1. 仅管理员可运行、重试和取消作业。
+
+模型配置响应只返回 `api_key_configured`、`credential_version` 和 `key_rotated_at`，禁止返回密文或明文。
+更新 `api_key` 即执行轮换并增加凭据版本。连通性测试按模型类型发送最小请求，响应仅包含可达状态、
+模型编码和平台请求标识，不返回供应商原始错误体。
+
+统一模型网关错误码：
+
+| 错误码 | 说明 |
+|---|---|
+| `MODEL_CONFIG_NOT_FOUND` | 配置不存在或凭据不可用 |
+| `MODEL_CONFIG_DISABLED` | 配置已停用 |
+| `MODEL_TIMEOUT` | 供应商调用超时 |
+| `MODEL_NETWORK_ERROR` | 网络连接失败 |
+| `MODEL_HTTP_{status}` | 供应商返回非成功状态 |
+| `MODEL_INVALID_RESPONSE` | 响应结构不满足模型类型契约 |
+| `MODEL_RESPONSE_TOO_LARGE` | 响应超过安全上限 |
+| `MODEL_CONCURRENCY_LIMIT` | 单模型并发额度已占满 |
+| `MODEL_CIRCUIT_OPEN` | 连续失败达到阈值，熔断恢复窗口尚未结束 |
 2. 只有 `queued`、`pending` 状态的作业可以取消，成功后状态变为 `canceled` 并写入 `finished_at`。
 3. 已取消或已经开始、结束的作业再次取消返回 `409 CONFLICT`；不存在的作业返回 `404 NOT_FOUND`。
 4. `canceled` 是终态，Worker、手工运行和失败重试均不得再次执行该作业。

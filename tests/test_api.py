@@ -384,6 +384,31 @@ def test_admin_can_manage_model_configuration_without_exposing_api_key() -> None
         assert updated.json()["data"]["status"] == "disabled"
 
 
+def test_admin_can_test_model_connection_and_read_call_audit() -> None:
+    store = DemoStore.seed()
+    model = store.create_model_config({"provider_code": "qianfan", "provider_name": "百度千帆", "base_url": "https://qianfan.test/v2", "model_code": "deepseek-v4-pro", "model_kind": "text", "api_key": "secret"})
+    assert model
+
+    class FakeGateway:
+        def test_connection(self, config_id: str, *, trace_id: str | None = None) -> dict:
+            store.record_model_call({"model_config_id": config_id, "request_id": "request-1", "trace_id": trace_id, "operation": "chat", "status": "succeeded", "attempt_count": 1, "latency_ms": 10, "http_status": 200, "token_usage": {}})
+            return {"reachable": True, "model_code": "deepseek-v4-pro", "request_id": "request-1"}
+
+        def close(self) -> None:
+            pass
+
+    with TestClient(create_app(store=store, object_storage=InMemoryObjectStorage(), model_gateway=FakeGateway())) as client:
+        reviewer_headers = _login(client)
+        assert client.post(f"/api/v1/settings/models/{model['id']}/test", headers=reviewer_headers).status_code == 403
+        admin_headers = _login(client, login_name="admin")
+        tested = client.post(f"/api/v1/settings/models/{model['id']}/test", headers=admin_headers)
+        assert tested.status_code == 200
+        assert tested.json()["data"]["reachable"] is True
+        logs = client.get("/api/v1/settings/model-call-logs", headers=admin_headers)
+        assert logs.status_code == 200
+        assert logs.json()["data"][0]["request_id"] == "request-1"
+
+
 def test_admin_can_manage_categories_templates_and_system_parameters() -> None:
     with _client() as client:
         reviewer_headers = _login(client)

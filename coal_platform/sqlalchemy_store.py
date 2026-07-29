@@ -10,6 +10,8 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from coal_platform.auth import hash_password, verify_password
+from coal_platform.config import get_settings
+from coal_platform.model_security import ModelSecretCipher
 from coal_platform.models import (
     AuditIssue,
     AuditRound,
@@ -21,6 +23,7 @@ from coal_platform.models import (
     ExecutorVersion,
     IssueEvidence,
     IssueSource,
+    ModelCallLog,
     ModelConfig,
     ModelProvider,
     OperationLog,
@@ -80,6 +83,7 @@ class SqlAlchemyStore(DemoStore):
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         super().__init__()
         self.session_factory = session_factory
+        self._model_cipher = ModelSecretCipher(get_settings().model_secret_key.get_secret_value())
 
     def initialize(self, seed_demo_data: bool = True) -> None:
         with self.session_factory() as session:
@@ -1149,7 +1153,7 @@ class SqlAlchemyStore(DemoStore):
     @staticmethod
     def _model_config_dict(session: Session, item: ModelConfig) -> dict[str, Any]:
         provider = session.get(ModelProvider, item.provider_id)
-        return {"id": str(item.id), "provider_code": provider.provider_code if provider else None, "provider_name": provider.provider_name if provider else None, "base_url": provider.base_url if provider else None, "model_code": item.model_code, "model_kind": item.model_kind, "api_key_configured": bool(item.api_key_ciphertext), "timeout_seconds": item.timeout_seconds, "concurrency_limit": item.concurrency_limit, "status": item.status, "created_at": _iso(item.created_at), "updated_at": _iso(item.updated_at)}
+        return {"id": str(item.id), "provider_code": provider.provider_code if provider else None, "provider_name": provider.provider_name if provider else None, "base_url": provider.base_url if provider else None, "model_code": item.model_code, "model_kind": item.model_kind, "api_key_configured": bool(item.api_key_ciphertext), "credential_version": item.credential_version, "key_rotated_at": _iso(item.key_rotated_at), "timeout_seconds": item.timeout_seconds, "concurrency_limit": item.concurrency_limit, "status": item.status, "created_at": _iso(item.created_at), "updated_at": _iso(item.updated_at)}
 
     def list_model_configs(self) -> list[dict[str, Any]]:
         with self.session_factory() as session:
@@ -1164,8 +1168,7 @@ class SqlAlchemyStore(DemoStore):
                 session.flush()
             if session.scalar(select(ModelConfig.id).where(ModelConfig.model_code == payload["model_code"], ModelConfig.provider_id == provider.id)):
                 return None
-            digest = sha256(payload["api_key"].encode()).hexdigest() if payload.get("api_key") else ""
-            item = ModelConfig(provider_id=provider.id, model_code=payload["model_code"], model_kind=payload["model_kind"], api_key_ciphertext=f"sha256:{digest}", timeout_seconds=payload.get("timeout_seconds", 60), concurrency_limit=payload.get("concurrency_limit", 1), status="active")
+            item = ModelConfig(provider_id=provider.id, model_code=payload["model_code"], model_kind=payload["model_kind"], api_key_ciphertext=self._model_cipher.encrypt(payload["api_key"]), credential_version=1, key_rotated_at=datetime.now(UTC), timeout_seconds=payload.get("timeout_seconds", 60), concurrency_limit=payload.get("concurrency_limit", 1), status="active")
             session.add(item)
             session.flush()
             self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="model_config", entity_id=item.id, action_code="model_config.create", after_snapshot=self._model_config_dict(session, item), trace_id=payload.get("_trace_id"))
@@ -1180,13 +1183,37 @@ class SqlAlchemyStore(DemoStore):
             if not item:
                 return None
             if payload.get("api_key"):
-                item.api_key_ciphertext = f"sha256:{sha256(payload['api_key'].encode()).hexdigest()}"
+                item.api_key_ciphertext = self._model_cipher.encrypt(payload["api_key"])
+                item.credential_version += 1
+                item.key_rotated_at = datetime.now(UTC)
             for key in ("timeout_seconds", "concurrency_limit", "status"):
                 if payload.get(key) is not None:
                     setattr(item, key, payload[key])
             session.flush()
             self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="model_config", entity_id=item.id, action_code="model_config.update", after_snapshot=self._model_config_dict(session, item), trace_id=payload.get("_trace_id"))
             return self._model_config_dict(session, item)
+
+    def get_model_runtime_config(self, config_id: str) -> dict[str, Any] | None:
+        config_uuid = _uuid(config_id)
+        if not config_uuid:
+            return None
+        with self.session_factory() as session:
+            item = session.get(ModelConfig, config_uuid)
+            if not item:
+                return None
+            provider = session.get(ModelProvider, item.provider_id)
+            if not provider:
+                return None
+            return {**self._model_config_dict(session, item), "api_key": self._model_cipher.decrypt(item.api_key_ciphertext)}
+
+    def record_model_call(self, payload: dict[str, Any]) -> None:
+        with self.session_factory() as session, session.begin():
+            session.add(ModelCallLog(model_config_id=_uuid(payload["model_config_id"]), request_id=payload["request_id"], trace_id=payload.get("trace_id"), operation=payload["operation"], status=payload["status"], attempt_count=payload.get("attempt_count", 1), latency_ms=payload["latency_ms"], http_status=payload.get("http_status"), provider_request_id=payload.get("provider_request_id"), token_usage=payload.get("token_usage") or {}, error_code=payload.get("error_code")))
+
+    def list_model_call_logs(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            items = session.scalars(select(ModelCallLog).order_by(ModelCallLog.created_at.desc()).limit(limit)).all()
+            return [{"id": str(item.id), "model_config_id": str(item.model_config_id), "request_id": item.request_id, "trace_id": item.trace_id, "operation": item.operation, "status": item.status, "attempt_count": item.attempt_count, "latency_ms": item.latency_ms, "http_status": item.http_status, "provider_request_id": item.provider_request_id, "token_usage": item.token_usage, "error_code": item.error_code, "created_at": _iso(item.created_at)} for item in items]
 
     @staticmethod
     def _system_parameter_dict(item: SystemParameter) -> dict[str, Any]:
