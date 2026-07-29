@@ -19,12 +19,63 @@ class Check:
     detail: str
 
 
+REQUIRED_MODEL_CONFIGS = (
+    ("text", "deepseek-v4-pro", "chat"),
+    ("multimodal", "ernie-5.0", "multimodal_chat"),
+    ("embedding", "embedding-v1", "embedding"),
+    ("reranker", "bce-reranker-base", "rerank"),
+)
+
+
 def active_standard_version(standards: list[dict[str, Any]]) -> dict[str, Any] | None:
     for standard in standards:
         for version in standard.get("versions") or []:
             if version.get("status") == "active":
                 return version
     return None
+
+
+def required_active_models(models: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
+    selected: list[tuple[dict[str, Any], str]] = []
+    missing: list[str] = []
+    for model_kind, model_code, operation in REQUIRED_MODEL_CONFIGS:
+        model = next(
+            (
+                item
+                for item in models
+                if item.get("model_kind") == model_kind
+                and item.get("model_code") == model_code
+                and item.get("status") == "active"
+            ),
+            None,
+        )
+        if model:
+            selected.append((model, operation))
+        else:
+            missing.append(f"{model_kind}/{model_code}")
+    if missing:
+        raise RuntimeError(f"full UAT requires active model configurations: {', '.join(missing)}")
+    return selected
+
+
+def verify_model_connection_audits(
+    expected_requests: dict[str, str], model_call_logs: list[dict[str, Any]]
+) -> dict[str, Any]:
+    if len(expected_requests) != len(REQUIRED_MODEL_CONFIGS):
+        raise RuntimeError("full UAT requires four unique production model request ids")
+    succeeded = {
+        (item.get("request_id"), item.get("operation"))
+        for item in model_call_logs
+        if item.get("status") == "succeeded"
+    }
+    missing = [
+        f"{operation}:{request_id}"
+        for request_id, operation in expected_requests.items()
+        if (request_id, operation) not in succeeded
+    ]
+    if missing:
+        raise RuntimeError(f"successful model connection audit logs are missing: {', '.join(sorted(missing))}")
+    return {"model_count": len(expected_requests), "operations": sorted(expected_requests.values())}
 
 
 def verify_real_model_evidence(
@@ -140,20 +191,38 @@ class UATRunner:
     def full_audit_workflow(self, task: dict[str, Any]) -> dict[str, Any]:
         round_id = task["current_round_id"]
         models = self.api("GET", "/api/v1/settings/models", "读取模型配置")
-        text_model = next(
-            (item for item in models if item.get("model_kind") == "text" and item.get("status") == "active"),
-            None,
+        connection_requests: dict[str, str] = {}
+        for model, operation in required_active_models(models):
+            connection = self.api(
+                "POST",
+                f"/api/v1/settings/models/{model['id']}/test",
+                f"真实模型连通性 {model['model_code']}",
+                json={},
+            )
+            if (
+                not connection.get("reachable")
+                or not connection.get("request_id")
+                or connection.get("model_code") != model["model_code"]
+            ):
+                raise RuntimeError(
+                    f"{model['model_code']} connection test did not return the expected provider request"
+                )
+            request_id = connection["request_id"]
+            if request_id in connection_requests:
+                raise RuntimeError(f"duplicate model connection request id: {request_id}")
+            connection_requests[request_id] = operation
+        connection_logs = self.api(
+            "GET", "/api/v1/settings/model-call-logs?limit=500", "四类模型连通性审计记录"
         )
-        if not text_model:
-            raise RuntimeError("UAT requires an active text model configuration")
-        connection = self.api(
-            "POST",
-            f"/api/v1/settings/models/{text_model['id']}/test",
-            "真实文本模型连通性",
-            json={},
+        connection_evidence = verify_model_connection_audits(connection_requests, connection_logs)
+        self.checks.append(
+            Check(
+                "四类生产模型连通性闭环",
+                "passed",
+                f"{connection_evidence['model_count']} 个模型，"
+                f"操作 {', '.join(connection_evidence['operations'])}",
+            )
         )
-        if not connection.get("reachable") or not connection.get("request_id"):
-            raise RuntimeError("text model connection test did not return a provider request")
         standards = self.api("GET", "/api/v1/standards", "读取正式标准目录")
         version = active_standard_version(standards)
         if not version:
