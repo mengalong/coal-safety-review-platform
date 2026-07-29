@@ -406,6 +406,9 @@ class SqlAlchemyStore(DemoStore):
             "storage_key": file_item.storage_key,
             "version_no": file_item.version_no,
             "status": file_item.status,
+            "parse_summary": file_item.parse_summary,
+            "is_required": file_item.is_required,
+            "is_applicable": file_item.is_applicable,
             "created_at": _iso(file_item.created_at),
             "updated_at": _iso(file_item.updated_at),
         }
@@ -1757,6 +1760,57 @@ class SqlAlchemyStore(DemoStore):
                 )
                 created.append(self._file_dict(file_item))
             return created
+
+    def update_task_file(self, task_id: str, file_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        return self._mutate_task_file(task_id, file_id, payload, "task_file.update")
+
+    def replace_task_file(self, task_id: str, file_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        payload = {**payload, "_replace": True}
+        return self._mutate_task_file(task_id, file_id, payload, "task_file.replace")
+
+    def delete_task_file(self, task_id: str, file_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        return self._mutate_task_file(task_id, file_id, payload, "task_file.delete")
+
+    def retry_task_file_parse(self, task_id: str, file_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        return self._mutate_task_file(task_id, file_id, payload, "task_file.parse_retry")
+
+    def _mutate_task_file(self, task_id: str, file_id: str, payload: dict[str, Any], action_code: str) -> dict[str, Any] | None:
+        task_uuid, file_uuid = _uuid(task_id), _uuid(file_id)
+        if not task_uuid or not file_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            task = session.get(AuditTask, task_uuid)
+            item = session.get(TaskFile, file_uuid)
+            if not task or not item or item.task_id != task.id or item.status == "deleted":
+                return None
+            before = self._file_dict(item)
+            if action_code == "task_file.update":
+                for key, attr in (("file_type", "file_type"), ("is_required", "is_required"), ("is_applicable", "is_applicable")):
+                    if key in payload and payload[key] is not None:
+                        setattr(item, attr, payload[key])
+            elif action_code == "task_file.replace":
+                duplicate = session.scalar(select(TaskFile).where(TaskFile.task_id == task.id, TaskFile.sha256 == payload["sha256"], TaskFile.id != item.id, TaskFile.status != "deleted"))
+                if duplicate:
+                    raise ValueError("file with the same content already exists")
+                item.original_name = payload["file_name"]
+                item.file_type = payload.get("file_type") or "other"
+                item.mime_type = payload.get("content_type")
+                item.file_size = payload["file_size"]
+                item.sha256 = payload["sha256"]
+                item.storage_key = payload["storage_key"]
+                item.version_no += 1
+                item.status = "uploaded"
+                item.parse_summary = {}
+            elif action_code == "task_file.delete":
+                item.status = "deleted"
+            else:
+                summary = dict(item.parse_summary or {})
+                summary["retry_count"] = int(summary.get("retry_count", 0)) + 1
+                item.parse_summary = summary
+                item.status = "parse_pending"
+            self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="task_file", entity_id=item.id, action_code=action_code, before_snapshot=before, after_snapshot=self._file_dict(item), trace_id=payload.get("_trace_id"))
+            session.flush()
+            return self._file_dict(item)
 
     def create_round(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         task_uuid = _uuid(task_id)

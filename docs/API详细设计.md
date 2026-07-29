@@ -119,7 +119,8 @@
 |---|---|---|
 | `POST` | `/api/v1/tasks/{task_id}/files` | 上传文件 |
 | `PATCH` | `/api/v1/tasks/{task_id}/files/{file_id}` | 修正文件类型 |
-| `POST` | `/api/v1/tasks/{task_id}/files/{file_id}/replace` | 替换文件 |
+| `PUT` | `/api/v1/tasks/{task_id}/files/{file_id}` | 替换文件并递增文件版本 |
+| `DELETE` | `/api/v1/tasks/{task_id}/files/{file_id}` | 软删除文件并保留审计记录 |
 | `POST` | `/api/v1/tasks/{task_id}/files/{file_id}/retry-parse` | 重试解析 |
 | `POST` | `/api/v1/tasks/{task_id}/files/{file_id}/mark-unavailable` | 标记无法解析继续 |
 

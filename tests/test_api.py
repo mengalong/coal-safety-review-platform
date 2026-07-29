@@ -451,6 +451,28 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
             ],
         )
         assert uploaded.status_code == 200
+        file_id = uploaded.json()["data"]["files"][0]["id"]
+        classified = client.patch(
+            f"/api/v1/tasks/{task['id']}/files/{file_id}",
+            headers=headers,
+            json={"file_type": "product_manual", "is_required": True},
+        )
+        assert classified.status_code == 200
+        assert classified.json()["data"]["file_type"] == "product_manual"
+        retried = client.post(f"/api/v1/tasks/{task['id']}/files/{file_id}/retry-parse", headers=headers)
+        assert retried.status_code == 200
+        assert retried.json()["data"]["status"] == "parse_pending"
+        replaced = client.put(
+            f"/api/v1/tasks/{task['id']}/files/{file_id}",
+            headers=headers,
+            files={"file": ("新版说明书.pdf", b"new-pdf", "application/pdf")},
+        )
+        assert replaced.status_code == 200
+        assert replaced.json()["data"]["version_no"] == 2
+        deleted = client.delete(f"/api/v1/tasks/{task['id']}/files/{file_id}", headers=headers)
+        assert deleted.status_code == 200
+        assert deleted.json()["data"]["status"] == "deleted"
+        assert client.post(f"/api/v1/tasks/{task['id']}/files/{file_id}/retry-parse", headers=headers).status_code == 404
 
         assembled = client.post(
             f"/api/v1/rounds/{task['current_round_id']}/rules/assemble",

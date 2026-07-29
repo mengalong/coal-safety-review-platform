@@ -244,6 +244,80 @@ async def upload_files(task_id: str, request: Request, files: Annotated[list[Upl
     return _ok({"files": created})
 
 
+@tasks_router.patch("/{task_id}/files/{file_id}")
+async def update_file_metadata(task_id: str, file_id: str, request: Request) -> dict:
+    store = request.app.state.store
+    task = store.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    payload = await request.json()
+    payload.update(_operation_context(request))
+    updated = store.update_task_file(task_id, file_id, payload)
+    if not updated:
+        raise HTTPException(status_code=404, detail="file not found")
+    return _ok(updated)
+
+
+@tasks_router.put("/{task_id}/files/{file_id}")
+async def replace_file(task_id: str, file_id: str, request: Request, file: Annotated[UploadFile, File()]) -> dict:
+    store = request.app.state.store
+    task = store.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    old_file = next((item for item in task.get("files", []) if item.get("id") == file_id), None)
+    if not old_file or old_file.get("status") == "deleted":
+        raise HTTPException(status_code=404, detail="file not found")
+    content = await file.read()
+    file_name = Path(file.filename or "unnamed").name
+    storage_key = f"tasks/{task_id}/{uuid4().hex}/{file_name}"
+    await run_in_threadpool(request.app.state.object_storage.put, storage_key, content, file.content_type)
+    payload = {
+        "file_name": file_name, "file_type": Path(file_name).suffix.lower().lstrip(".") or "other",
+        "content_type": file.content_type, "file_size": len(content), "sha256": sha256(content).hexdigest(),
+        "storage_key": storage_key, **_operation_context(request),
+    }
+    try:
+        updated = store.replace_task_file(task_id, file_id, payload)
+    except ValueError as exc:
+        await run_in_threadpool(request.app.state.object_storage.delete, storage_key)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not updated:
+        await run_in_threadpool(request.app.state.object_storage.delete, storage_key)
+        raise HTTPException(status_code=404, detail="file not found")
+    old_key = old_file.get("storage_key")
+    if old_key and old_key != storage_key:
+        await run_in_threadpool(request.app.state.object_storage.delete, old_key)
+    return _ok(updated)
+
+
+@tasks_router.delete("/{task_id}/files/{file_id}")
+def delete_file(task_id: str, file_id: str, request: Request) -> dict:
+    store = request.app.state.store
+    task = store.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    deleted = store.delete_task_file(task_id, file_id, _operation_context(request))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="file not found")
+    return _ok(deleted)
+
+
+@tasks_router.post("/{task_id}/files/{file_id}/retry-parse")
+def retry_file_parse(task_id: str, file_id: str, request: Request) -> dict:
+    store = request.app.state.store
+    task = store.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    retried = store.retry_task_file_parse(task_id, file_id, _operation_context(request))
+    if not retried:
+        raise HTTPException(status_code=404, detail="file not found")
+    return _ok(retried)
+
+
 @rounds_router.get("/{round_id}")
 def get_round(round_id: str, request: Request) -> dict:
     round_item = request.app.state.store.get_round(round_id)

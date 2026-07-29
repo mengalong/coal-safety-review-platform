@@ -663,6 +663,65 @@ class DemoStore:
             task["updated_at"] = _now()
             return deepcopy(created)
 
+    def _find_task_file(self, task_id: str, file_id: str) -> tuple[dict | None, dict | None]:
+        task = self.tasks.get(task_id)
+        if not task:
+            return None, None
+        for item in task.get("files", []):
+            if item.get("id") == file_id:
+                return task, item
+        return task, None
+
+    def update_task_file(self, task_id: str, file_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            task, file_item = self._find_task_file(task_id, file_id)
+            if not task or not file_item or file_item.get("status") == "deleted":
+                return None
+            if payload.get("file_type"):
+                file_item["file_type"] = payload["file_type"]
+            if payload.get("is_required") is not None:
+                file_item["is_required"] = payload["is_required"]
+            if payload.get("is_applicable") is not None:
+                file_item["is_applicable"] = payload["is_applicable"]
+            task["updated_at"] = _now()
+            return deepcopy(file_item)
+
+    def replace_task_file(self, task_id: str, file_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            task, file_item = self._find_task_file(task_id, file_id)
+            if not task or not file_item or file_item.get("status") == "deleted":
+                return None
+            file_item.update(
+                file_name=payload["file_name"], file_type=payload.get("file_type") or "other",
+                content_type=payload.get("content_type"), file_size=payload["file_size"],
+                sha256=payload["sha256"], storage_key=payload["storage_key"],
+                status="uploaded", parse_summary={}, version_no=file_item.get("version_no", 1) + 1,
+            )
+            task["updated_at"] = _now()
+            return deepcopy(file_item)
+
+    def delete_task_file(self, task_id: str, file_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            task, file_item = self._find_task_file(task_id, file_id)
+            if not task or not file_item or file_item.get("status") == "deleted":
+                return None
+            file_item["status"] = "deleted"
+            file_item["deleted_at"] = _now()
+            task["updated_at"] = _now()
+            return deepcopy(file_item)
+
+    def retry_task_file_parse(self, task_id: str, file_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            task, file_item = self._find_task_file(task_id, file_id)
+            if not task or not file_item or file_item.get("status") == "deleted":
+                return None
+            summary = dict(file_item.get("parse_summary") or {})
+            summary["retry_count"] = int(summary.get("retry_count", 0)) + 1
+            file_item["parse_summary"] = summary
+            file_item["status"] = "parse_pending"
+            task["updated_at"] = _now()
+            return deepcopy(file_item)
+
     def list_standards(self) -> list[dict]:
         return [deepcopy(item) for item in self.standards.values()]
 
