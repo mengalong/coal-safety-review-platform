@@ -1156,6 +1156,14 @@ def run_job(job_id: str, request: Request) -> dict:
     return _ok(result, "queue job completed")
 
 
+@jobs_router.post("/{job_id}/retry")
+def retry_job(job_id: str, request: Request) -> dict:
+    result = request.app.state.store.retry_queue_job(job_id, _operation_context(request))
+    if not result:
+        raise HTTPException(status_code=409, detail="queue job is not retryable")
+    return _ok(result, "queue job requeued")
+
+
 @monitoring_router.get("")
 def monitoring() -> dict:
     return _ok(

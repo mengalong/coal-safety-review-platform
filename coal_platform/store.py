@@ -1516,6 +1516,18 @@ class DemoStore:
                 item["finished_at"] = _now()
             return deepcopy(item)
 
+    def retry_queue_job(self, job_id: str, payload: dict | None = None) -> dict | None:
+        with self._lock:
+            item = self.queue_jobs.get(job_id)
+            if not item or item.get("status") not in {"failed", "exception"}:
+                return None
+            retry_count = int(item.get("retry_count", 0)) + 1
+            item["retry_count"] = retry_count
+            item["status"] = "queued" if retry_count <= 3 else "failed"
+            if payload and payload.get("error"):
+                item["error"] = deepcopy(payload["error"])
+            return deepcopy(item)
+
     def complete_audit_run(self, run_id: str, payload: dict) -> dict | None:
         with self._lock:
             run = self.audit_runs.get(run_id)

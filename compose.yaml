@@ -62,6 +62,20 @@ services:
       minio:
         condition: service_started
 
+  worker:
+    build:
+      context: .
+    command: celery -A coal_platform.worker:celery_app worker --loglevel=INFO --queues=coal
+    environment:
+      COAL_ENVIRONMENT: development
+      COAL_DATABASE_URL: postgresql+psycopg://coal:coal-local-password@postgres:5432/coal
+      COAL_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   coal_postgres_data:
   coal_redis_data:

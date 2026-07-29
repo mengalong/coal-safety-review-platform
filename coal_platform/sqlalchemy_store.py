@@ -1124,6 +1124,21 @@ class SqlAlchemyStore(DemoStore):
             session.flush()
             return self._queue_job_dict(job)
 
+    def retry_queue_job(self, job_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        job_uuid = _uuid(job_id)
+        if not job_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            job = session.get(QueueJob, job_uuid)
+            if not job or job.status not in {"failed", "exception"}:
+                return None
+            job.retry_count += 1
+            job.status = "queued" if job.retry_count <= 3 else "failed"
+            if payload and payload.get("error"):
+                job.payload = {**(job.payload or {}), "error": payload["error"]}
+            session.flush()
+            return self._queue_job_dict(job)
+
     def complete_audit_run(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         run_uuid = _uuid(run_id)
         if not run_uuid:
