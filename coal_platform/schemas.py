@@ -131,6 +131,12 @@ class ExecutionAttemptRequest(BaseModel):
     elapsed_ms: int | None = Field(default=None, ge=0)
 
 
+class LocalRerunRequest(BaseModel):
+    affected_rule_codes: list[str] = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    input_change: dict[str, Any] = Field(default_factory=dict)
+
+
 class IssueUpdateRequest(BaseModel):
     title: str | None = None
     description: str | None = None

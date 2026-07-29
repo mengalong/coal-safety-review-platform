@@ -518,6 +518,18 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
         )
         assert confirmed.status_code == 200
         assert confirmed.json()["data"]["status"] == "confirmed"
+        local = client.post(
+            f"/api/v1/rounds/{task['current_round_id']}/audit/local-rerun",
+            headers=headers,
+            json={
+                "affected_rule_codes": [snapshot["rules"][0]["rule_code"]],
+                "reason": "补充客户文件后重跑",
+                "input_change": {"file_ids": [uploaded.json()["data"]["files"][0]["id"]]},
+            },
+        )
+        assert local.status_code == 202
+        assert local.json()["data"]["run_scope"] == "local"
+        assert local.json()["data"]["affected_rule_codes"] == [snapshot["rules"][0]["rule_code"]]
 
         repeated = client.post(
             f"/api/v1/rounds/{task['current_round_id']}/rules/assemble",

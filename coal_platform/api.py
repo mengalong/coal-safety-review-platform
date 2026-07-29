@@ -16,6 +16,7 @@ from coal_platform.schemas import (
     BasicInfoPayload,
     ExecutionAttemptRequest,
     IssueUpdateRequest,
+    LocalRerunRequest,
     LoginRequest,
     LoginResponse,
     ReportCreateRequest,
@@ -370,6 +371,26 @@ def start_audit(round_id: str, request: Request) -> JSONResponse:
     if not run:
         raise HTTPException(status_code=404, detail="round not found")
     return JSONResponse(status_code=202, content=_ok(run, "audit queued"))
+
+
+@rounds_router.post("/{round_id}/audit/local-rerun")
+def local_rerun(round_id: str, payload: LocalRerunRequest, request: Request) -> JSONResponse:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    try:
+        result = request.app.state.store.local_rerun(round_id, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not result:
+        raise HTTPException(status_code=404, detail="round not found")
+    return JSONResponse(status_code=202, content=_ok(result, "local rerun queued"))
 
 
 @rounds_router.get("/{round_id}/audit-runs")

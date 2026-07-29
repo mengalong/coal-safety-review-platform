@@ -102,6 +102,7 @@ class DemoStore:
         self.tasks: dict[str, dict] = {}
         self.audit_runs: dict[str, dict] = {}
         self.rule_executions: dict[str, dict] = {}
+        self.impact_analyses: dict[str, dict] = {}
         self.standards: dict[str, dict] = {}
         self.standard_parse_revisions: dict[str, list[dict]] = {}
         self.rules: dict[str, dict] = {}
@@ -1326,6 +1327,60 @@ class DemoStore:
             matching_task["updated_at"] = _now()
             matching_round["status"] = "auditing"
             matching_round["updated_at"] = _now()
+            return deepcopy(run)
+
+    def local_rerun(self, round_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            matching_task = None
+            matching_round = None
+            for task in self.tasks.values():
+                for item in task.get("rounds", []):
+                    if item.get("id") == round_id:
+                        matching_task, matching_round = task, item
+                        break
+                if matching_round:
+                    break
+            if not matching_task or not matching_round:
+                return None
+            affected = set(payload.get("affected_rule_codes") or [])
+            rules = [item for item in matching_round.get("rules", []) if item.get("rule_code") in affected]
+            if affected - {item.get("rule_code") for item in rules}:
+                raise ValueError("rule is not present in round snapshot")
+            if not rules:
+                raise ValueError("no affected rule found in round snapshot")
+            for execution in self.rule_executions.values():
+                if execution["round_id"] == round_id and execution.get("rule_code") in affected:
+                    execution["is_expired"] = True
+            impact_id = str(uuid4())
+            impact = {
+                "id": impact_id, "round_id": round_id, "trigger_type": "local_rerun",
+                "trigger_payload": {"reason": payload["reason"], "input_change": payload.get("input_change", {})},
+                "affected_rule_codes": sorted(affected), "status": "queued", "created_at": _now(),
+            }
+            self.impact_analyses[impact_id] = impact
+            run_id = str(uuid4())
+            run = {
+                "id": run_id, "audit_run_id": run_id, "task_id": matching_task["id"],
+                "round_id": round_id, "run_no": sum(1 for item in self.audit_runs.values() if item["round_id"] == round_id) + 1,
+                "status": "queued", "job_id": str(uuid4()), "job_status": "queued", "created_at": _now(),
+                "impact_analysis_id": impact_id, "run_scope": "local",
+            }
+            self.audit_runs[run_id] = run
+            for round_rule in rules:
+                input_snapshot = {
+                    "round_id": round_id, "rule_snapshot_no": round_rule.get("snapshot_no"),
+                    "rule_version_id": round_rule["rule_version_id"], "input_change": payload.get("input_change", {}),
+                }
+                execution_id = str(uuid4())
+                self.rule_executions[execution_id] = {
+                    "id": execution_id, "audit_run_id": run_id, "round_id": round_id,
+                    "rule_version_id": round_rule["rule_version_id"], "rule_code": round_rule.get("rule_code"),
+                    "executor_version_id": round_rule["executor_version_id"], "status": "pending",
+                    "input_snapshot": input_snapshot,
+                    "normalized_input_hash": sha256(json.dumps(input_snapshot, sort_keys=True).encode()).hexdigest(),
+                    "retry_count": 0, "attempt_count": 0, "attempts": [], "is_expired": False, "created_at": _now(),
+                }
+            run["affected_rule_codes"] = sorted(affected)
             return deepcopy(run)
 
     def list_audit_runs(self, round_id: str) -> list[dict] | None:

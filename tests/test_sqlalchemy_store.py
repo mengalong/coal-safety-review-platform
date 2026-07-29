@@ -114,6 +114,12 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     executions = store.list_rule_executions(task["current_round_id"])
     assert executions and len(executions) == 2
     assert executions[0]["status"] == "pending"
+    local = store.local_rerun(
+        task["current_round_id"],
+        {"affected_rule_codes": [executions[0]["rule_code"]], "reason": "补充文件后重跑"},
+    )
+    assert local and local["run_scope"] == "local"
+    assert store.list_rule_executions(task["current_round_id"])[0]["is_expired"] is True
     updated = store.record_execution_attempt(
         executions[0]["id"],
         {

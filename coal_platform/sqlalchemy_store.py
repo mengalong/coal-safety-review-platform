@@ -29,6 +29,7 @@ from coal_platform.models import (
     RuleDefinition,
     RuleExecution,
     RuleExecutionAttempt,
+    RuleImpactAnalysis,
     RulePack,
     RulePackItem,
     RuleVersion,
@@ -1889,6 +1890,94 @@ class SqlAlchemyStore(DemoStore):
             )
             session.flush()
             return self._audit_run_dict(audit_run, job_id=job.id)
+
+    def local_rerun(self, round_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        round_uuid = _uuid(round_id)
+        if not round_uuid:
+            return None
+        affected_codes = set(payload.get("affected_rule_codes") or [])
+        with self.session_factory() as session, session.begin():
+            round_item = session.get(AuditRound, round_uuid)
+            if not round_item:
+                return None
+            round_rules = session.scalars(
+                select(RoundRule).where(RoundRule.round_id == round_item.id, RoundRule.enabled.is_(True))
+            ).all()
+            selected: list[RoundRule] = []
+            selected_codes: set[str] = set()
+            for round_rule in round_rules:
+                version = session.get(RuleVersion, round_rule.rule_version_id)
+                definition = session.get(RuleDefinition, version.rule_definition_id) if version else None
+                if definition and definition.rule_code in affected_codes:
+                    selected.append(round_rule)
+                    selected_codes.add(definition.rule_code)
+            missing_codes = affected_codes - selected_codes
+            if missing_codes:
+                raise ValueError(f"rule is not present in round snapshot: {', '.join(sorted(missing_codes))}")
+            if not selected:
+                raise ValueError("no affected rule found in round snapshot")
+            selected_version_ids = [item.rule_version_id for item in selected]
+            for previous in session.scalars(
+                select(RuleExecution).where(
+                    RuleExecution.round_id == round_item.id,
+                    RuleExecution.rule_version_id.in_(selected_version_ids),
+                )
+            ):
+                previous.is_expired = True
+            impact = RuleImpactAnalysis(
+                round_id=round_item.id,
+                trigger_type="local_rerun",
+                trigger_payload={"reason": payload["reason"], "input_change": payload.get("input_change", {})},
+                affected_rule_codes=sorted(affected_codes),
+                estimated_rerun_scope={"rule_count": len(selected)},
+                status="queued",
+            )
+            session.add(impact)
+            session.flush()
+            latest_run_no = session.scalar(
+                select(func.max(AuditRun.run_no)).where(AuditRun.round_id == round_item.id)
+            ) or 0
+            audit_run = AuditRun(
+                round_id=round_item.id,
+                run_no=latest_run_no + 1,
+                status="queued",
+                summary={"run_scope": "local", "impact_analysis_id": str(impact.id)},
+            )
+            session.add(audit_run)
+            session.flush()
+            for round_rule in selected:
+                input_snapshot = {
+                    "round_id": str(round_item.id), "rule_snapshot_no": round_rule.snapshot_no,
+                    "rule_version_id": str(round_rule.rule_version_id),
+                    "input_change": payload.get("input_change", {}),
+                }
+                session.add(
+                    RuleExecution(
+                        audit_run_id=audit_run.id, round_id=round_item.id,
+                        rule_version_id=round_rule.rule_version_id,
+                        executor_version_id=round_rule.executor_version_id, status="pending",
+                        input_snapshot=input_snapshot,
+                        normalized_input_hash=sha256(json.dumps(input_snapshot, sort_keys=True).encode()).hexdigest(),
+                    )
+                )
+            job = QueueJob(
+                job_code=f"LOCAL-RERUN-{audit_run.id}", job_type="local_rerun", queue_name="audit",
+                payload={"audit_run_id": str(audit_run.id), "round_id": str(round_item.id),
+                         "impact_analysis_id": str(impact.id)},
+                status="queued",
+            )
+            session.add(job)
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"), entity_type="rule_impact_analysis",
+                entity_id=impact.id, action_code="audit.local_rerun",
+                after_snapshot={"affected_rule_codes": sorted(affected_codes), "audit_run_id": str(audit_run.id)},
+                reason=payload["reason"], trace_id=payload.get("_trace_id"),
+            )
+            session.flush()
+            result = self._audit_run_dict(audit_run, job_id=job.id)
+            result.update({"impact_analysis_id": str(impact.id), "run_scope": "local", "affected_rule_codes": sorted(affected_codes)})
+            return result
 
     def list_audit_runs(self, round_id: str) -> list[dict[str, Any]] | None:
         round_uuid = _uuid(round_id)
