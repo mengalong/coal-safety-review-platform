@@ -71,11 +71,18 @@ services:
       COAL_ENVIRONMENT: development
       COAL_DATABASE_URL: postgresql+psycopg://coal:coal-local-password@postgres:5432/coal
       COAL_REDIS_URL: redis://redis:6379/0
+      COAL_MINIO_ENDPOINT: minio:9000
+      COAL_MINIO_ACCESS_KEY: coal
+      COAL_MINIO_SECRET_KEY: coal-local-secret
+      COAL_MINIO_BUCKET: coal-review
+      COAL_STORAGE_BACKEND: minio
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio:
+        condition: service_started
 
 volumes:
   coal_postgres_data:

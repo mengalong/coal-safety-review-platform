@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from time import monotonic
 from typing import Any
 
+from coal_platform.document_parser import parse_document
+from coal_platform.storage import ObjectStorage
 from coal_platform.store_protocol import PlatformStore
 
 
@@ -89,7 +91,11 @@ def run_rule_execution(store: PlatformStore, execution_id: str, input_payload: d
         })
 
 
-def process_queue_job(store: PlatformStore, job_id: str) -> dict[str, Any] | None:
+def process_queue_job(
+    store: PlatformStore,
+    job_id: str,
+    object_storage: ObjectStorage | None = None,
+) -> dict[str, Any] | None:
     job = store.get_queue_job(job_id)
     if not job:
         return None
@@ -97,6 +103,26 @@ def process_queue_job(store: PlatformStore, job_id: str) -> dict[str, Any] | Non
         raise ValueError("queue job is not runnable")
     store.update_queue_job(job_id, {"status": "running"})
     try:
+        if job["job_type"] == "document_parse":
+            payload = job["payload"]
+            file_id = payload["file_id"]
+            context = {
+                "_operator_user_id": payload.get("operator_user_id"),
+                "_trace_id": payload.get("trace_id"),
+                "_storage_key": payload.get("storage_key"),
+            }
+            if object_storage is None:
+                raise ValueError("object storage is required for document parsing")
+            if not store.start_task_file_parse(file_id, context):
+                raise ValueError("task file is not available for parsing")
+            content = object_storage.get(payload["storage_key"])
+            if content is None:
+                raise ValueError("task file object is missing")
+            parsed = parse_document(content, payload["file_name"], payload.get("file_type"))
+            completed = store.complete_task_file_parse(file_id, parsed["blocks"], parsed["summary"], context)
+            if not completed:
+                raise ValueError("task file parse result could not be saved")
+            return store.update_queue_job(job_id, {"status": "succeeded", "result": parsed["summary"]})
         if job["job_type"] == "rule_test_run":
             payload = job["payload"]
             version = store.get_rule_version(payload["rule_version_id"])
@@ -124,6 +150,17 @@ def process_queue_job(store: PlatformStore, job_id: str) -> dict[str, Any] | Non
             store.complete_audit_run(payload["audit_run_id"], {"status": "failed" if exceptions else "succeeded", "summary": summary})
             return store.update_queue_job(job_id, {"status": "failed" if exceptions else "succeeded", "result": summary})
         raise ValueError(f"unsupported queue job type: {job['job_type']}")
-    except (KeyError, TypeError, ValueError) as exc:
+    except Exception as exc:
+        if job["job_type"] == "document_parse":
+            payload = job.get("payload") or {}
+            store.fail_task_file_parse(
+                payload.get("file_id", ""),
+                {"code": "DOCUMENT_PARSE_FAILED", "message": str(exc)},
+                {
+                    "_operator_user_id": payload.get("operator_user_id"),
+                    "_trace_id": payload.get("trace_id"),
+                    "_storage_key": payload.get("storage_key"),
+                },
+            )
         store.update_queue_job(job_id, {"status": "failed", "error": {"code": "JOB_EXECUTION_FAILED", "message": str(exc)}})
         raise

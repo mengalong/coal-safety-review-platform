@@ -104,6 +104,7 @@ class DemoStore:
         self.audit_runs: dict[str, dict] = {}
         self.rule_executions: dict[str, dict] = {}
         self.queue_jobs: dict[str, dict] = {}
+        self.parsed_blocks: dict[str, list[dict]] = {}
         self.impact_analyses: dict[str, dict] = {}
         self.dynamic_items: dict[str, dict] = {}
         self.standards: dict[str, dict] = {}
@@ -720,6 +721,8 @@ class DemoStore:
             task, file_item = self._find_task_file(task_id, file_id)
             if not task or not file_item or file_item.get("status") == "deleted":
                 return None
+            self._cancel_file_parse_jobs(file_id)
+            self.parsed_blocks.pop(file_id, None)
             file_item.update(
                 file_name=payload["file_name"], file_type=payload.get("file_type") or "other",
                 content_type=payload.get("content_type"), file_size=payload["file_size"],
@@ -734,10 +737,121 @@ class DemoStore:
             task, file_item = self._find_task_file(task_id, file_id)
             if not task or not file_item or file_item.get("status") == "deleted":
                 return None
+            self._cancel_file_parse_jobs(file_id)
             file_item["status"] = "deleted"
             file_item["deleted_at"] = _now()
             task["updated_at"] = _now()
             return deepcopy(file_item)
+
+    def _cancel_file_parse_jobs(self, file_id: str) -> None:
+        for job in self.queue_jobs.values():
+            if (
+                job.get("job_type") == "document_parse"
+                and (job.get("payload") or {}).get("file_id") == file_id
+                and job.get("status") in {"queued", "pending"}
+            ):
+                job["status"] = "canceled"
+                job["finished_at"] = _now()
+
+    def create_task_file_parse_job(self, task_id: str, file_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            task, file_item = self._find_task_file(task_id, file_id)
+            if not task or not file_item or file_item.get("status") in {"deleted", "unavailable"}:
+                return None
+            active = next(
+                (
+                    item
+                    for item in self.queue_jobs.values()
+                    if item.get("job_type") == "document_parse"
+                    and (item.get("payload") or {}).get("file_id") == file_id
+                    and (item.get("payload") or {}).get("storage_key") == file_item["storage_key"]
+                    and item.get("status") in {"queued", "pending", "running"}
+                ),
+                None,
+            )
+            if active:
+                result = deepcopy(active)
+                result["reused"] = True
+                return result
+            job_id = str(uuid4())
+            job = {
+                "id": job_id,
+                "job_code": f"PARSE-{job_id}",
+                "job_type": "document_parse",
+                "queue_name": "document_parse",
+                "status": "queued",
+                "retry_count": 0,
+                "payload": {
+                    "task_id": task_id,
+                    "file_id": file_id,
+                    "storage_key": file_item["storage_key"],
+                    "file_name": file_item["file_name"],
+                    "file_type": file_item.get("file_type"),
+                    "version_no": file_item.get("version_no", 1),
+                    "operator_user_id": payload.get("_operator_user_id"),
+                    "trace_id": payload.get("_trace_id"),
+                },
+                "created_at": _now(),
+            }
+            file_item["status"] = "parse_pending"
+            self.queue_jobs[job_id] = job
+            return deepcopy(job)
+
+    def start_task_file_parse(self, file_id: str, payload: dict | None = None) -> dict | None:
+        with self._lock:
+            for task in self.tasks.values():
+                file_item = next((item for item in task.get("files", []) if item.get("id") == file_id), None)
+                if file_item and file_item.get("status") not in {"deleted", "unavailable"}:
+                    if payload and payload.get("_storage_key") != file_item.get("storage_key"):
+                        return None
+                    file_item["status"] = "parsing"
+                    return deepcopy(file_item)
+        return None
+
+    def complete_task_file_parse(
+        self,
+        file_id: str,
+        blocks: list[dict],
+        summary: dict,
+        payload: dict | None = None,
+    ) -> dict | None:
+        with self._lock:
+            for task in self.tasks.values():
+                file_item = next((item for item in task.get("files", []) if item.get("id") == file_id), None)
+                if not file_item or file_item.get("status") in {"deleted", "unavailable"}:
+                    continue
+                if payload and payload.get("_storage_key") != file_item.get("storage_key"):
+                    return None
+                self.parsed_blocks[file_id] = [
+                    {"id": str(uuid4()), "file_id": file_id, **deepcopy(block)} for block in blocks
+                ]
+                retry_count = (file_item.get("parse_summary") or {}).get("retry_count", 0)
+                file_item["parse_summary"] = {**deepcopy(summary), "retry_count": retry_count, "parsed_at": _now()}
+                file_item["status"] = "parsed"
+                return deepcopy(file_item)
+        return None
+
+    def fail_task_file_parse(
+        self, file_id: str, error: dict, payload: dict | None = None
+    ) -> dict | None:
+        with self._lock:
+            for task in self.tasks.values():
+                file_item = next((item for item in task.get("files", []) if item.get("id") == file_id), None)
+                if not file_item or file_item.get("status") in {"deleted", "unavailable"}:
+                    continue
+                if payload and payload.get("_storage_key") != file_item.get("storage_key"):
+                    return None
+                summary = dict(file_item.get("parse_summary") or {})
+                file_item["parse_summary"] = {**summary, "error": deepcopy(error), "failed_at": _now()}
+                file_item["status"] = "parse_failed"
+                return deepcopy(file_item)
+        return None
+
+    def list_task_file_blocks(self, task_id: str, file_id: str) -> list[dict] | None:
+        _task, file_item = self._find_task_file(task_id, file_id)
+        if not file_item or file_item.get("status") == "deleted":
+            return None
+        return deepcopy(self.parsed_blocks.get(file_id, []))
 
     def retry_task_file_parse(self, task_id: str, file_id: str, payload: dict) -> dict | None:
         with self._lock:

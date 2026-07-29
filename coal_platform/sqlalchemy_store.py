@@ -24,6 +24,7 @@ from coal_platform.models import (
     ModelConfig,
     ModelProvider,
     OperationLog,
+    ParsedBlock,
     QueueJob,
     Report,
     RoundRule,
@@ -2065,6 +2066,197 @@ class SqlAlchemyStore(DemoStore):
     def retry_task_file_parse(self, task_id: str, file_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         return self._mutate_task_file(task_id, file_id, payload, "task_file.parse_retry")
 
+    def create_task_file_parse_job(
+        self, task_id: str, file_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        task_uuid, file_uuid = _uuid(task_id), _uuid(file_id)
+        if not task_uuid or not file_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            file_item = session.scalar(
+                select(TaskFile)
+                .where(TaskFile.id == file_uuid, TaskFile.task_id == task_uuid)
+                .with_for_update()
+            )
+            if not file_item or file_item.status in {"deleted", "unavailable"}:
+                return None
+            active_jobs = session.scalars(
+                select(QueueJob).where(
+                    QueueJob.job_type == "document_parse",
+                    QueueJob.status.in_({"queued", "pending", "running"}),
+                )
+            )
+            active = next(
+                (
+                    job
+                    for job in active_jobs
+                    if (job.payload or {}).get("file_id") == file_id
+                    and (job.payload or {}).get("storage_key") == file_item.storage_key
+                ),
+                None,
+            )
+            if active:
+                result = self._queue_job_dict(active)
+                result["reused"] = True
+                return result
+            job = QueueJob(
+                job_code=f"PARSE-{uuid4().hex}",
+                job_type="document_parse",
+                queue_name="document_parse",
+                status="queued",
+                payload={
+                    "task_id": task_id,
+                    "file_id": file_id,
+                    "storage_key": file_item.storage_key,
+                    "file_name": file_item.original_name,
+                    "file_type": file_item.file_type,
+                    "version_no": file_item.version_no,
+                    "operator_user_id": payload.get("_operator_user_id"),
+                    "trace_id": payload.get("_trace_id"),
+                },
+            )
+            file_item.status = "parse_pending"
+            session.add(job)
+            session.flush()
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"),
+                entity_type="task_file",
+                entity_id=file_item.id,
+                action_code="task_file.parse.queue",
+                after_snapshot={"job_id": str(job.id), "status": file_item.status},
+                trace_id=payload.get("_trace_id"),
+            )
+            return self._queue_job_dict(job)
+
+    def start_task_file_parse(
+        self, file_id: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        file_uuid = _uuid(file_id)
+        if not file_uuid:
+            return None
+        context = payload or {}
+        with self.session_factory() as session, session.begin():
+            file_item = session.get(TaskFile, file_uuid)
+            if not file_item or file_item.status in {"deleted", "unavailable"}:
+                return None
+            if context.get("_storage_key") and context["_storage_key"] != file_item.storage_key:
+                return None
+            file_item.status = "parsing"
+            session.flush()
+            return self._file_dict(file_item)
+
+    def complete_task_file_parse(
+        self,
+        file_id: str,
+        blocks: list[dict[str, Any]],
+        summary: dict[str, Any],
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        file_uuid = _uuid(file_id)
+        if not file_uuid:
+            return None
+        context = payload or {}
+        with self.session_factory() as session, session.begin():
+            file_item = session.get(TaskFile, file_uuid)
+            if not file_item or file_item.status in {"deleted", "unavailable"}:
+                return None
+            if context.get("_storage_key") and context["_storage_key"] != file_item.storage_key:
+                return None
+            for old_block in session.scalars(select(ParsedBlock).where(ParsedBlock.file_id == file_uuid)):
+                session.delete(old_block)
+            session.add_all(
+                [
+                    ParsedBlock(
+                        file_id=file_uuid,
+                        page_no=block["page_no"],
+                        block_type=block["block_type"],
+                        content_text=block.get("content_text"),
+                        bbox=block.get("bbox"),
+                        confidence=block.get("confidence", 1.0),
+                        source_ref=block.get("source_ref"),
+                    )
+                    for block in blocks
+                ]
+            )
+            retry_count = (file_item.parse_summary or {}).get("retry_count", 0)
+            file_item.parse_summary = {**summary, "retry_count": retry_count, "parsed_at": datetime.now(UTC).isoformat()}
+            file_item.status = "parsed"
+            self._log(
+                session,
+                operator_user_id=context.get("_operator_user_id"),
+                entity_type="task_file",
+                entity_id=file_item.id,
+                action_code="task_file.parse.complete",
+                after_snapshot={"status": "parsed", "parse_summary": file_item.parse_summary},
+                trace_id=context.get("_trace_id"),
+            )
+            session.flush()
+            return self._file_dict(file_item)
+
+    def fail_task_file_parse(
+        self,
+        file_id: str,
+        error: dict[str, Any],
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        file_uuid = _uuid(file_id)
+        if not file_uuid:
+            return None
+        context = payload or {}
+        with self.session_factory() as session, session.begin():
+            file_item = session.get(TaskFile, file_uuid)
+            if not file_item or file_item.status in {"deleted", "unavailable"}:
+                return None
+            if context.get("_storage_key") and context["_storage_key"] != file_item.storage_key:
+                return None
+            file_item.parse_summary = {
+                **(file_item.parse_summary or {}),
+                "error": error,
+                "failed_at": datetime.now(UTC).isoformat(),
+            }
+            file_item.status = "parse_failed"
+            self._log(
+                session,
+                operator_user_id=context.get("_operator_user_id"),
+                entity_type="task_file",
+                entity_id=file_item.id,
+                action_code="task_file.parse.fail",
+                after_snapshot={"status": "parse_failed", "error": error},
+                trace_id=context.get("_trace_id"),
+            )
+            session.flush()
+            return self._file_dict(file_item)
+
+    @staticmethod
+    def _parsed_block_dict(item: ParsedBlock) -> dict[str, Any]:
+        return {
+            "id": str(item.id),
+            "file_id": str(item.file_id),
+            "page_no": item.page_no,
+            "block_type": item.block_type,
+            "content_text": item.content_text,
+            "bbox": item.bbox,
+            "confidence": float(item.confidence),
+            "source_ref": item.source_ref,
+            "created_at": _iso(item.created_at),
+        }
+
+    def list_task_file_blocks(self, task_id: str, file_id: str) -> list[dict[str, Any]] | None:
+        task_uuid, file_uuid = _uuid(task_id), _uuid(file_id)
+        if not task_uuid or not file_uuid:
+            return None
+        with self.session_factory() as session:
+            file_item = session.get(TaskFile, file_uuid)
+            if not file_item or file_item.task_id != task_uuid or file_item.status == "deleted":
+                return None
+            blocks = session.scalars(
+                select(ParsedBlock)
+                .where(ParsedBlock.file_id == file_uuid)
+                .order_by(ParsedBlock.page_no, ParsedBlock.created_at)
+            )
+            return [self._parsed_block_dict(item) for item in blocks]
+
     def _mutate_task_file(self, task_id: str, file_id: str, payload: dict[str, Any], action_code: str) -> dict[str, Any] | None:
         task_uuid, file_uuid = _uuid(task_id), _uuid(file_id)
         if not task_uuid or not file_uuid:
@@ -2092,8 +2284,12 @@ class SqlAlchemyStore(DemoStore):
                 item.version_no += 1
                 item.status = "uploaded"
                 item.parse_summary = {}
+                for block in session.scalars(select(ParsedBlock).where(ParsedBlock.file_id == item.id)):
+                    session.delete(block)
+                self._cancel_pending_file_parse_jobs(session, item.id)
             elif action_code == "task_file.delete":
                 item.status = "deleted"
+                self._cancel_pending_file_parse_jobs(session, item.id)
             else:
                 summary = dict(item.parse_summary or {})
                 summary["retry_count"] = int(summary.get("retry_count", 0)) + 1
@@ -2102,6 +2298,19 @@ class SqlAlchemyStore(DemoStore):
             self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="task_file", entity_id=item.id, action_code=action_code, before_snapshot=before, after_snapshot=self._file_dict(item), trace_id=payload.get("_trace_id"))
             session.flush()
             return self._file_dict(item)
+
+    @staticmethod
+    def _cancel_pending_file_parse_jobs(session: Session, file_id: UUID) -> None:
+        jobs = session.scalars(
+            select(QueueJob).where(
+                QueueJob.job_type == "document_parse",
+                QueueJob.status.in_({"queued", "pending"}),
+            )
+        )
+        for job in jobs:
+            if (job.payload or {}).get("file_id") == str(file_id):
+                job.status = "canceled"
+                job.finished_at = datetime.now(UTC)
 
     def create_round(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         task_uuid = _uuid(task_id)

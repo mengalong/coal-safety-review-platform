@@ -125,17 +125,26 @@
 | `PUT` | `/api/v1/tasks/{task_id}/files/{file_id}` | 替换文件并递增文件版本 |
 | `DELETE` | `/api/v1/tasks/{task_id}/files/{file_id}` | 软删除文件并保留审计记录 |
 | `POST` | `/api/v1/tasks/{task_id}/files/{file_id}/retry-parse` | 重试解析 |
+| `GET` | `/api/v1/tasks/{task_id}/files/{file_id}/blocks` | 查询解析证据块 |
 | `POST` | `/api/v1/tasks/{task_id}/files/{file_id}/mark-unavailable` | 标记无法解析继续 |
 
 上传响应：
 
 ```json
 {
-  "job_id": "uuid",
-  "file_id": "uuid",
-  "status": "uploaded"
+  "files": [{"id": "uuid", "status": "uploaded"}],
+  "parse_jobs": [{"id": "uuid", "job_type": "document_parse", "status": "queued"}]
 }
 ```
+
+文件解析语义：
+
+1. 上传或替换文件后自动创建 `document_parse` 作业；启用 Celery 派发时由 Worker 从对象存储读取原文件。
+2. 文件状态依次为 `uploaded -> parse_pending -> parsing -> parsed / parse_failed`；失败后通过重试接口创建新作业。
+3. PDF 文本按页和行保存，Word 保存段落和表格行，Excel 保存工作表行及单元格范围；证据块统一返回 `page_no`、`block_type`、`content_text`、`bbox`、`confidence` 和 `source_ref`。
+4. PDF 无文本页写入 `parse_summary.empty_text_pages` 并设置 `needs_ocr=true`，不得将空页当作已取得有效证据。
+5. 文件替换会取消尚未执行的旧解析作业并清除旧块；运行中的旧作业通过存储键和文件版本快照隔离，不得覆盖新版本结果。
+6. 上传入口直接拒绝超过 50 MiB 的单文件；DOCX/XLSX 解压后最大 200 MiB、归档条目最大 10000 个；PDF/工作表最大 1000 页，解析块最大 10000 个，单块文本最大 100000 字符。
 
 ## 5. 轮次与标准
 

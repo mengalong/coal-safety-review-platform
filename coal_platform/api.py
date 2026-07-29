@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 
 from coal_platform.auth import access_token_expires_at, create_access_token, require_admin, require_user
 from coal_platform.config import get_settings
+from coal_platform.document_parser import MAX_FILE_BYTES
 from coal_platform.executor_runtime import process_queue_job, run_rule_execution
 from coal_platform.report_renderer import render_docx, render_pdf
 from coal_platform.request_context import get_trace_id
@@ -113,6 +114,17 @@ def _dispatch_job_if_enabled(request: Request, job_id: str | None) -> dict[str, 
             job_id, {"status": "failed", "error": {"code": "JOB_DISPATCH_FAILED", "message": str(exc)}}
         )
         return {"dispatch_error": str(exc)}
+
+
+def _queue_file_parse(request: Request, task_id: str, file_id: str) -> dict | None:
+    job = request.app.state.store.create_task_file_parse_job(task_id, file_id, _operation_context(request))
+    if not job:
+        return None
+    if not job.pop("reused", False):
+        dispatch = _dispatch_job_if_enabled(request, job["id"])
+        if dispatch:
+            job.update(dispatch)
+    return job
 
 
 @health_router.get("/healthz")
@@ -253,22 +265,29 @@ async def upload_files(task_id: str, request: Request, files: Annotated[list[Upl
     _ensure_task_access(request, task)
     context = _operation_context(request)
     file_records = []
-    for upload in files:
-        content = await upload.read()
-        file_name = Path(upload.filename or "unnamed").name
-        storage_key = f"tasks/{task_id}/{uuid4().hex}/{file_name}"
-        await run_in_threadpool(request.app.state.object_storage.put, storage_key, content, upload.content_type)
-        file_records.append(
-            {
-                "file_name": file_name,
-                "file_type": Path(file_name).suffix.lower().lstrip(".") or "other",
-                "content_type": upload.content_type,
-                "file_size": len(content),
-                "sha256": sha256(content).hexdigest(),
-                "storage_key": storage_key,
-                **context,
-            }
-        )
+    try:
+        for upload in files:
+            content = await upload.read()
+            if len(content) > MAX_FILE_BYTES:
+                raise HTTPException(status_code=413, detail=f"file exceeds {MAX_FILE_BYTES} byte upload limit")
+            file_name = Path(upload.filename or "unnamed").name
+            storage_key = f"tasks/{task_id}/{uuid4().hex}/{file_name}"
+            await run_in_threadpool(request.app.state.object_storage.put, storage_key, content, upload.content_type)
+            file_records.append(
+                {
+                    "file_name": file_name,
+                    "file_type": Path(file_name).suffix.lower().lstrip(".") or "other",
+                    "content_type": upload.content_type,
+                    "file_size": len(content),
+                    "sha256": sha256(content).hexdigest(),
+                    "storage_key": storage_key,
+                    **context,
+                }
+            )
+    except Exception:
+        for item in file_records:
+            await run_in_threadpool(request.app.state.object_storage.delete, item["storage_key"])
+        raise
     try:
         created = store.add_task_files(task_id, file_records)
     except Exception:
@@ -279,7 +298,8 @@ async def upload_files(task_id: str, request: Request, files: Annotated[list[Upl
     for item in file_records:
         if item["storage_key"] not in referenced_keys:
             await run_in_threadpool(request.app.state.object_storage.delete, item["storage_key"])
-    return _ok({"files": created})
+    jobs = [job for item in created or [] if (job := _queue_file_parse(request, task_id, item["id"]))]
+    return _ok({"files": created, "parse_jobs": jobs})
 
 
 @tasks_router.patch("/{task_id}/files/{file_id}")
@@ -308,6 +328,8 @@ async def replace_file(task_id: str, file_id: str, request: Request, file: Annot
     if not old_file or old_file.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="file not found")
     content = await file.read()
+    if len(content) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail=f"file exceeds {MAX_FILE_BYTES} byte upload limit")
     file_name = Path(file.filename or "unnamed").name
     storage_key = f"tasks/{task_id}/{uuid4().hex}/{file_name}"
     await run_in_threadpool(request.app.state.object_storage.put, storage_key, content, file.content_type)
@@ -327,6 +349,9 @@ async def replace_file(task_id: str, file_id: str, request: Request, file: Annot
     old_key = old_file.get("storage_key")
     if old_key and old_key != storage_key:
         await run_in_threadpool(request.app.state.object_storage.delete, old_key)
+    parse_job = _queue_file_parse(request, task_id, file_id)
+    if parse_job:
+        updated["parse_job"] = parse_job
     return _ok(updated)
 
 
@@ -353,7 +378,23 @@ def retry_file_parse(task_id: str, file_id: str, request: Request) -> dict:
     retried = store.retry_task_file_parse(task_id, file_id, _operation_context(request))
     if not retried:
         raise HTTPException(status_code=404, detail="file not found")
+    parse_job = _queue_file_parse(request, task_id, file_id)
+    if parse_job:
+        retried["parse_job"] = parse_job
     return _ok(retried)
+
+
+@tasks_router.get("/{task_id}/files/{file_id}/blocks")
+def list_file_blocks(task_id: str, file_id: str, request: Request) -> dict:
+    store = request.app.state.store
+    task = store.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    blocks = store.list_task_file_blocks(task_id, file_id)
+    if blocks is None:
+        raise HTTPException(status_code=404, detail="file not found")
+    return _ok(blocks)
 
 
 @rounds_router.get("/{round_id}")
@@ -1268,7 +1309,7 @@ def list_jobs(request: Request) -> dict:
 @jobs_router.post("/{job_id}/run")
 def run_job(job_id: str, request: Request) -> dict:
     try:
-        result = process_queue_job(request.app.state.store, job_id)
+        result = process_queue_job(request.app.state.store, job_id, request.app.state.object_storage)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not result:

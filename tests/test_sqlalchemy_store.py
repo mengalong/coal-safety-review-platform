@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from coal_platform.database import Base
+from coal_platform.executor_runtime import process_queue_job
 from coal_platform.main import create_app
 from coal_platform.models import (
     AuditRun,
@@ -14,6 +15,7 @@ from coal_platform.models import (
     ExecutorDefinition,
     ExecutorVersion,
     OperationLog,
+    ParsedBlock,
     QueueJob,
     RoundRule,
     RoundStandard,
@@ -92,6 +94,48 @@ def test_database_store_persists_task_round_file_and_operation_logs(tmp_path: Pa
 
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(OperationLog)) == 3
+
+
+def test_database_store_persists_document_parse_blocks_and_audit_log(tmp_path: Path) -> None:
+    store, factory = _store(tmp_path / "document-parse.db")
+    storage = InMemoryObjectStorage()
+    reviewer = store.authenticate("liming", DemoStore.demo_password)
+    assert reviewer
+    task = store.create_task({"owner_user_id": reviewer["id"], "_operator_user_id": reviewer["id"]})
+    content = b"Model: DSJ80/40/2x75\nPower: 75 kW"
+    files = store.add_task_files(
+        task["id"],
+        [
+            {
+                "file_name": "parameters.txt",
+                "file_type": "txt",
+                "content_type": "text/plain",
+                "file_size": len(content),
+                "sha256": "d" * 64,
+                "storage_key": f"tasks/{task['id']}/parameters.txt",
+                "_operator_user_id": reviewer["id"],
+                "_trace_id": "document-parse",
+            }
+        ],
+    )
+    assert files
+    storage.put(files[0]["storage_key"], content, "text/plain")
+    job = store.create_task_file_parse_job(
+        task["id"],
+        files[0]["id"],
+        {"_operator_user_id": reviewer["id"], "_trace_id": "document-parse"},
+    )
+    assert job
+
+    completed = process_queue_job(store, job["id"], storage)
+    assert completed and completed["status"] == "succeeded"
+    blocks = store.list_task_file_blocks(task["id"], files[0]["id"])
+    assert blocks and [item["content_text"] for item in blocks] == ["Model: DSJ80/40/2x75", "Power: 75 kW"]
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(ParsedBlock)) == 2
+        actions = set(session.scalars(select(OperationLog.action_code)))
+        assert {"task_file.parse.queue", "task_file.parse.complete"} <= actions
 
 
 def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:

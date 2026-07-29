@@ -49,6 +49,28 @@ class PlatformStore(Protocol):
 
     def retry_task_file_parse(self, task_id: str, file_id: str, payload: dict[str, Any]) -> dict[str, Any] | None: ...
 
+    def create_task_file_parse_job(
+        self, task_id: str, file_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None: ...
+
+    def start_task_file_parse(
+        self, file_id: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None: ...
+
+    def complete_task_file_parse(
+        self,
+        file_id: str,
+        blocks: list[dict[str, Any]],
+        summary: dict[str, Any],
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def fail_task_file_parse(
+        self, file_id: str, error: dict[str, Any], payload: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None: ...
+
+    def list_task_file_blocks(self, task_id: str, file_id: str) -> list[dict[str, Any]] | None: ...
+
     def create_round(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any] | None: ...
 
     def get_round(self, round_id: str) -> dict[str, Any] | None: ...

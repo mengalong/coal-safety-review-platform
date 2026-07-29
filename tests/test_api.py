@@ -1,3 +1,6 @@
+from io import BytesIO
+
+from docx import Document
 from fastapi.testclient import TestClient
 
 from coal_platform.main import create_app
@@ -16,6 +19,14 @@ def _login(client: TestClient, login_name: str = "liming") -> dict[str, str]:
     )
     assert response.status_code == 200
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+def _docx_content(text: str) -> bytes:
+    document = Document()
+    document.add_paragraph(text)
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
 
 
 def test_logout_revokes_current_access_token() -> None:
@@ -117,6 +128,118 @@ def test_task_creation_creates_the_initial_round() -> None:
         assert task["product_model"] == "DSJ80/40/2x75"
         assert len(task["rounds"]) == 1
         assert task["rounds"][0]["id"] == task["current_round_id"]
+
+
+def test_uploaded_document_can_be_parsed_and_queried_as_evidence_blocks() -> None:
+    with _client() as client:
+        headers = _login(client)
+        admin_headers = _login(client, login_name="admin")
+        task = client.post("/api/v1/tasks", headers=headers, json={}).json()["data"]
+        uploaded = client.post(
+            f"/api/v1/tasks/{task['id']}/files",
+            headers=headers,
+            files={
+                "files": (
+                    "specification.docx",
+                    _docx_content("Product model: KBZ-500/1140"),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        ).json()["data"]
+        file_item = uploaded["files"][0]
+        parse_job = uploaded["parse_jobs"][0]
+        assert parse_job["job_type"] == "document_parse"
+
+        completed = client.post(f"/api/v1/jobs/{parse_job['id']}/run", headers=admin_headers)
+        assert completed.status_code == 200
+        assert completed.json()["data"]["result"]["block_count"] == 1
+        detail = client.get(f"/api/v1/tasks/{task['id']}", headers=headers).json()["data"]
+        parsed_file = next(item for item in detail["files"] if item["id"] == file_item["id"])
+        assert parsed_file["status"] == "parsed"
+        assert parsed_file["parse_summary"]["parser"] == "python-docx"
+
+        blocks = client.get(
+            f"/api/v1/tasks/{task['id']}/files/{file_item['id']}/blocks",
+            headers=headers,
+        )
+        assert blocks.status_code == 200
+        assert blocks.json()["data"][0]["content_text"] == "Product model: KBZ-500/1140"
+        assert blocks.json()["data"][0]["source_ref"] == "docx:paragraph:1"
+
+
+def test_document_parse_failure_is_visible_and_retryable() -> None:
+    with _client() as client:
+        headers = _login(client)
+        admin_headers = _login(client, login_name="admin")
+        task = client.post("/api/v1/tasks", headers=headers, json={}).json()["data"]
+        uploaded = client.post(
+            f"/api/v1/tasks/{task['id']}/files",
+            headers=headers,
+            files={"files": ("invalid.pdf", b"not-a-pdf", "application/pdf")},
+        ).json()["data"]
+        file_item = uploaded["files"][0]
+        parse_job = uploaded["parse_jobs"][0]
+
+        failed = client.post(f"/api/v1/jobs/{parse_job['id']}/run", headers=admin_headers)
+        assert failed.status_code == 422
+        detail = client.get(f"/api/v1/tasks/{task['id']}", headers=headers).json()["data"]
+        failed_file = next(item for item in detail["files"] if item["id"] == file_item["id"])
+        assert failed_file["status"] == "parse_failed"
+        assert failed_file["parse_summary"]["error"]["code"] == "DOCUMENT_PARSE_FAILED"
+
+        retried = client.post(
+            f"/api/v1/tasks/{task['id']}/files/{file_item['id']}/retry-parse",
+            headers=headers,
+        )
+        assert retried.status_code == 200
+        assert retried.json()["data"]["status"] == "parse_pending"
+        assert retried.json()["data"]["parse_job"]["id"] != parse_job["id"]
+
+
+def test_replaced_file_rejects_stale_running_parse_result() -> None:
+    store = DemoStore.seed()
+    task = store.create_task({})
+    original = store.add_task_files(
+        task["id"],
+        [
+            {
+                "file_name": "original.txt",
+                "file_type": "txt",
+                "file_size": 8,
+                "sha256": "a" * 64,
+                "storage_key": "tasks/original.txt",
+            }
+        ],
+    )[0]
+    old_job = store.create_task_file_parse_job(task["id"], original["id"], {})
+    assert old_job
+    store.update_queue_job(old_job["id"], {"status": "running"})
+
+    replaced = store.replace_task_file(
+        task["id"],
+        original["id"],
+        {
+            "file_name": "replacement.txt",
+            "file_type": "txt",
+            "content_type": "text/plain",
+            "file_size": 11,
+            "sha256": "b" * 64,
+            "storage_key": "tasks/replacement.txt",
+        },
+    )
+    assert replaced
+    new_job = store.create_task_file_parse_job(task["id"], original["id"], {})
+    assert new_job and new_job["id"] != old_job["id"]
+    stale = store.complete_task_file_parse(
+        original["id"],
+        [{"page_no": 1, "block_type": "paragraph", "content_text": "stale"}],
+        {"block_count": 1},
+        {"_storage_key": "tasks/original.txt"},
+    )
+    assert stale is None
+    current = store.get_task(task["id"])
+    assert current["files"][0]["status"] == "parse_pending"
+    assert store.list_task_file_blocks(task["id"], original["id"]) == []
 
 
 def test_start_audit_updates_task_and_round_status() -> None:
