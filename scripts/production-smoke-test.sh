@@ -9,11 +9,27 @@ compose() {
   docker compose --env-file "$ENV_FILE" -f compose.production.yaml "$@"
 }
 
-compose ps --status running
-if compose ps -a | grep -Eq 'unhealthy|health: starting|Exited|Restarting'; then
-  echo "One or more production containers are not healthy" >&2
-  exit 1
-fi
+WAIT_SECONDS=${COAL_SMOKE_WAIT_SECONDS:-120}
+WAITED=0
+while :; do
+  STATUS=$(compose ps -a)
+  if echo "$STATUS" | grep -Eq 'unhealthy|Exited|Restarting'; then
+    echo "$STATUS" >&2
+    echo "One or more production containers failed while waiting for health" >&2
+    exit 1
+  fi
+  if ! echo "$STATUS" | grep -Eq 'health: starting|Created'; then
+    break
+  fi
+  if [ "$WAITED" -ge "$WAIT_SECONDS" ]; then
+    echo "$STATUS" >&2
+    echo "Production containers did not become healthy within ${WAIT_SECONDS}s" >&2
+    exit 1
+  fi
+  sleep 2
+  WAITED=$((WAITED + 2))
+done
+echo "$STATUS"
 READY=$(curl -kfsS "https://127.0.0.1:$HTTPS_PORT/api/v1/readyz")
 echo "$READY" | grep -q '"status":"ready"'
 HEADERS=$(curl -kfsSI "https://127.0.0.1:$HTTPS_PORT/")

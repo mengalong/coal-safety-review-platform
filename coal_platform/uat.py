@@ -27,6 +27,40 @@ def active_standard_version(standards: list[dict[str, Any]]) -> dict[str, Any] |
     return None
 
 
+def verify_real_model_evidence(
+    executions: list[dict[str, Any]], model_call_logs: list[dict[str, Any]]
+) -> dict[str, Any]:
+    dynamic_executions = [item for item in executions if item.get("dynamic_item_id")]
+    if not dynamic_executions:
+        raise RuntimeError("full UAT requires at least one dynamic model execution")
+    request_ids: set[str] = set()
+    for execution in dynamic_executions:
+        result = execution.get("result_payload") or {}
+        sufficiency = result.get("evidence_sufficiency") or {}
+        if execution.get("status") != "succeeded" or result.get("outcome") not in {
+            "passed",
+            "failed",
+        }:
+            raise RuntimeError(
+                f"dynamic execution {execution.get('id')} did not produce a determinate model decision"
+            )
+        if not sufficiency.get("sufficient") or not sufficiency.get("citations_valid"):
+            raise RuntimeError(f"dynamic execution {execution.get('id')} has invalid evidence citations")
+        request_id = result.get("model_request_id")
+        if not request_id:
+            raise RuntimeError(f"dynamic execution {execution.get('id')} has no model request id")
+        request_ids.add(request_id)
+    succeeded_logs = {
+        item.get("request_id")
+        for item in model_call_logs
+        if item.get("status") == "succeeded" and item.get("operation") == "chat"
+    }
+    missing_logs = request_ids - succeeded_logs
+    if missing_logs:
+        raise RuntimeError(f"successful model call audit logs are missing: {', '.join(sorted(missing_logs))}")
+    return {"dynamic_execution_count": len(dynamic_executions), "model_request_count": len(request_ids)}
+
+
 class UATRunner:
     def __init__(self, client: httpx.Client, timeout_seconds: int = 600) -> None:
         self.client = client
@@ -105,6 +139,21 @@ class UATRunner:
 
     def full_audit_workflow(self, task: dict[str, Any]) -> dict[str, Any]:
         round_id = task["current_round_id"]
+        models = self.api("GET", "/api/v1/settings/models", "读取模型配置")
+        text_model = next(
+            (item for item in models if item.get("model_kind") == "text" and item.get("status") == "active"),
+            None,
+        )
+        if not text_model:
+            raise RuntimeError("UAT requires an active text model configuration")
+        connection = self.api(
+            "POST",
+            f"/api/v1/settings/models/{text_model['id']}/test",
+            "真实文本模型连通性",
+            json={},
+        )
+        if not connection.get("reachable") or not connection.get("request_id"):
+            raise RuntimeError("text model connection test did not return a provider request")
         standards = self.api("GET", "/api/v1/standards", "读取正式标准目录")
         version = active_standard_version(standards)
         if not version:
@@ -133,6 +182,16 @@ class UATRunner:
         if audit.get("job_id"):
             self.wait_job(audit["job_id"], "审核执行")
         executions = self.api("GET", f"/api/v1/rounds/{round_id}/rule-executions", "审核执行记录与证据结果")
+        model_logs = self.api("GET", "/api/v1/settings/model-call-logs?limit=500", "模型调用审计记录")
+        model_evidence = verify_real_model_evidence(executions, model_logs)
+        self.checks.append(
+            Check(
+                "真实模型证据闭环",
+                "passed",
+                f"{model_evidence['dynamic_execution_count']} 个动态项，"
+                f"{model_evidence['model_request_count']} 个已审计模型请求",
+            )
+        )
         issues = self.api("GET", f"/api/v1/issues?round_id={round_id}", "读取问题复核队列")
         for issue in issues:
             self.api(
@@ -141,20 +200,27 @@ class UATRunner:
                 f"人工最终确认问题 {issue.get('issue_code')}",
                 json={"reason": "UAT 人工核对证据后确认", "manual_conclusion": "confirmed"},
             )
-        rule_codes = list(dict.fromkeys(item.get("rule_code") for item in executions if item.get("rule_code")))
-        if rule_codes:
-            rerun = self.api(
-                "POST",
-                f"/api/v1/rounds/{round_id}/audit/local-rerun",
-                "确认式局部重跑",
-                json={
-                    "affected_rule_codes": rule_codes[:1],
-                    "reason": "UAT 验证受控局部重跑",
-                    "input_change": {"uat": True},
-                },
+        rule_codes = list(
+            dict.fromkeys(
+                item.get("rule_code")
+                for item in executions
+                if item.get("rule_code") and not item.get("dynamic_item_id")
             )
-            if rerun.get("job_id"):
-                self.wait_job(rerun["job_id"], "局部重跑")
+        )
+        if not rule_codes:
+            raise RuntimeError("UAT requires at least one snapshotted static rule for local rerun")
+        rerun = self.api(
+            "POST",
+            f"/api/v1/rounds/{round_id}/audit/local-rerun",
+            "确认式局部重跑",
+            json={
+                "affected_rule_codes": rule_codes[:1],
+                "reason": "UAT 验证受控局部重跑",
+                "input_change": {"uat": True},
+            },
+        )
+        if rerun.get("job_id"):
+            self.wait_job(rerun["job_id"], "局部重跑")
         coverage = self.api("POST", f"/api/v1/rounds/{round_id}/coverage/check", "标准覆盖发布检查")
         if not coverage.get("can_publish"):
             raise RuntimeError(f"round is not publishable: {coverage.get('blockers')}")

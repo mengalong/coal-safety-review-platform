@@ -55,3 +55,24 @@ def test_release_uat_rejects_unknown_mode(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "COAL_UAT_MODE must be basic or full" in result.stderr
+
+
+def test_rollback_rejects_unknown_drill_mode(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "sh",
+            "scripts/rollback.sh",
+            "--confirm",
+            str(tmp_path / "previous.env"),
+            str(tmp_path / "backup"),
+            str(tmp_path / "current.env"),
+            "--unsafe-skip-pull",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "fifth argument must be --local-drill" in result.stderr

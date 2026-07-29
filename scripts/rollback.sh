@@ -2,13 +2,18 @@
 set -eu
 
 if [ "${1:-}" != "--confirm" ] || [ -z "${2:-}" ] || [ -z "${3:-}" ]; then
-  echo "Usage: $0 --confirm PREVIOUS_ENV BACKUP_DIRECTORY [CURRENT_ENV]" >&2
+  echo "Usage: $0 --confirm PREVIOUS_ENV BACKUP_DIRECTORY [CURRENT_ENV] [--local-drill]" >&2
   exit 2
 fi
 
 PREVIOUS_ENV=$2
 BACKUP=$3
 CURRENT_ENV=${4:-.env.production}
+DRILL_MODE=${5:-production}
+case "$DRILL_MODE" in
+  production|--local-drill) ;;
+  *) echo "fifth argument must be --local-drill when provided" >&2; exit 2 ;;
+esac
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 STARTED_AT=$(date +%s)
 RECORD_DIR=${COAL_RELEASE_RECORD_DIR:-$(dirname "$BACKUP")/release-records}
@@ -29,6 +34,7 @@ write_record() {
     echo "previous_env=$PREVIOUS_ENV"
     echo "current_env=$CURRENT_ENV"
     echo "backup=$BACKUP"
+    echo "image_pull=$([ "$DRILL_MODE" = "--local-drill" ] && echo skipped-local-drill || echo immutable-digest)"
     echo "uat_mode=${COAL_UAT_MODE:-basic}"
     echo "uat_result=$UAT_RESULT"
   } > "$RECORD"
@@ -47,7 +53,11 @@ previous_compose() {
 
 scripts/security-baseline-check.sh "$PREVIOUS_ENV"
 current_compose stop web api worker
-previous_compose pull api worker web
+if [ "$DRILL_MODE" = "--local-drill" ]; then
+  echo "Local drill: using prebuilt previous-version images without registry pull" >&2
+else
+  previous_compose pull api worker web
+fi
 scripts/restore.sh --confirm "$BACKUP" "$PREVIOUS_ENV"
 previous_compose up -d --no-build api worker web
 scripts/production-smoke-test.sh "$PREVIOUS_ENV"
