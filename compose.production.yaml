@@ -22,6 +22,7 @@ x-api-environment: &api-environment
 
 services:
   web:
+    image: ${COAL_WEB_IMAGE:-coal-safety-review-web:local}
     build:
       context: ./frontend
     ports:
@@ -46,6 +47,7 @@ services:
       retries: 10
 
   api:
+    image: ${COAL_API_IMAGE:-coal-safety-review-api:local}
     build:
       context: .
     environment: *api-environment
@@ -65,6 +67,7 @@ services:
     networks: [application, data]
 
   worker:
+    image: ${COAL_API_IMAGE:-coal-safety-review-api:local}
     build:
       context: .
     command: celery -A coal_platform.worker:celery_app worker --loglevel=INFO --queues=coal --concurrency=2
@@ -169,6 +172,7 @@ services:
     security_opt: ["no-new-privileges:true"]
 
   alert-notifier:
+    image: ${COAL_API_IMAGE:-coal-safety-review-api:local}
     build:
       context: .
     profiles: ["observability"]

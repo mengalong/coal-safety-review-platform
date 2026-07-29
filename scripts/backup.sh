@@ -3,7 +3,7 @@ set -eu
 
 ENV_FILE=${1:-.env.production}
 BACKUP_ROOT=${2:-./backups}
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+STAMP=${3:-$(date -u +%Y%m%dT%H%M%SZ)}
 TARGET="$BACKUP_ROOT/$STAMP"
 TEMP="$TARGET.tmp"
 

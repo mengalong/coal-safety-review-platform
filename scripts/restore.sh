@@ -6,8 +6,30 @@ if [ "${1:-}" != "--confirm" ] || [ -z "${2:-}" ]; then
   exit 2
 fi
 
-BACKUP=$(cd "$2" && pwd)
+SOURCE=$2
 ENV_FILE=${3:-.env.production}
+DECRYPTED=
+
+cleanup() {
+  if [ -n "$DECRYPTED" ]; then
+    rm -rf "$DECRYPTED"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+case "$SOURCE" in
+  *.tar.gz.age)
+    command -v age >/dev/null 2>&1 || { echo "age is required for encrypted backups" >&2; exit 1; }
+    test -r "${COAL_BACKUP_AGE_IDENTITY_FILE:-}" || {
+      echo "COAL_BACKUP_AGE_IDENTITY_FILE is required for encrypted restore" >&2
+      exit 1
+    }
+    DECRYPTED=$(mktemp -d)
+    age -d -i "$COAL_BACKUP_AGE_IDENTITY_FILE" "$SOURCE" | tar -C "$DECRYPTED" -xzf -
+    BACKUP=$(find "$DECRYPTED" -mindepth 1 -maxdepth 1 -type d | head -1)
+    ;;
+  *) BACKUP=$(cd "$SOURCE" && pwd) ;;
+esac
 
 compose() {
   docker compose --env-file "$ENV_FILE" -f compose.production.yaml "$@"
