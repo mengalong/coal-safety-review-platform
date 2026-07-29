@@ -1563,7 +1563,7 @@ class DemoStore:
             _key, issue = self._find_record(self.issues, issue_id)
             if not issue:
                 return None
-            for key in ("title", "description", "category_code", "severity", "affects_conclusion"):
+            for key in ("title", "description", "category_code", "severity", "affects_conclusion", "manual_conclusion"):
                 if payload.get(key) is not None:
                     issue[key] = payload[key]
             if payload.get("reason"):

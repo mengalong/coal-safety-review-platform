@@ -533,6 +533,18 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
         )
         assert confirmed.status_code == 200
         assert confirmed.json()["data"]["status"] == "confirmed"
+        updated_issue = client.patch(
+            f"/api/v1/issues/{issue_id}",
+            headers=headers,
+            json={"manual_conclusion": "已确认存在型号不一致", "reason": "完成证据复核"},
+        )
+        assert updated_issue.status_code == 200
+        assert updated_issue.json()["data"]["manual_conclusion"] == "已确认存在型号不一致"
+        closed = client.post(
+            f"/api/v1/issues/{issue_id}/close", headers=headers, json={"reason": "已纳入整改清单"}
+        )
+        assert closed.status_code == 200
+        assert closed.json()["data"]["status"] == "closed"
         local = client.post(
             f"/api/v1/rounds/{task['current_round_id']}/audit/local-rerun",
             headers=headers,

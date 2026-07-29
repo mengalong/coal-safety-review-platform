@@ -883,6 +883,20 @@ def reject_issue(issue_id: str, payload: dict, request: Request) -> dict:
     return _ok(issue)
 
 
+@issues_router.post("/{issue_id}/close")
+def close_issue(issue_id: str, payload: dict, request: Request) -> dict:
+    issue = request.app.state.store.get_issue(issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail="issue not found")
+    _ensure_issue_access(request, issue)
+    issue = request.app.state.store.set_issue_status(
+        issue_id, "closed", payload.get("reason"), _operation_context(request)
+    )
+    if not issue:
+        raise HTTPException(status_code=404, detail="issue not found")
+    return _ok(issue)
+
+
 @settings_router.get("/models", dependencies=[Depends(require_admin)])
 def list_models(request: Request) -> dict:
     return _ok(request.app.state.store.list_model_configs())

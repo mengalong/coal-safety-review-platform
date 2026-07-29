@@ -2179,7 +2179,7 @@ class SqlAlchemyStore(DemoStore):
             if not issue:
                 return None
             before = self._issue_dict(session, issue)
-            for key in ("title", "description", "category_code", "severity", "affects_conclusion"):
+            for key in ("title", "description", "category_code", "severity", "affects_conclusion", "manual_conclusion"):
                 if payload.get(key) is not None:
                     setattr(issue, key, payload[key])
             if payload.get("reason"):

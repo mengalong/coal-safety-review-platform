@@ -147,6 +147,7 @@ class IssueUpdateRequest(BaseModel):
     category_code: str | None = None
     severity: str | None = None
     affects_conclusion: bool | None = None
+    manual_conclusion: str | None = None
     reason: str | None = None
 
 

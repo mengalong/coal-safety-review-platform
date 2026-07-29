@@ -160,6 +160,12 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     assert len(issues[0]["sources"]) == 2 and len(issues[0]["evidence"]) == 4
     confirmed = store.set_issue_status(issues[0]["id"], "confirmed", "证据已人工核对")
     assert confirmed and confirmed["status"] == "confirmed"
+    updated_issue = store.update_issue(
+        issues[0]["id"], {"manual_conclusion": "已确认存在型号不一致", "reason": "完成证据复核"}
+    )
+    assert updated_issue and updated_issue["manual_conclusion"] == "已确认存在型号不一致"
+    closed = store.set_issue_status(issues[0]["id"], "closed", "已纳入整改清单")
+    assert closed and closed["status"] == "closed"
 
 
 def test_database_store_persists_standard_catalog_and_round_snapshot(tmp_path: Path) -> None:
