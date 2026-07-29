@@ -40,6 +40,7 @@ from coal_platform.models import (
     StandardClause,
     StandardParseRevision,
     StandardVersion,
+    SystemParameter,
     TaskFile,
     User,
 )
@@ -1141,6 +1142,31 @@ class SqlAlchemyStore(DemoStore):
             session.flush()
             self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="model_config", entity_id=item.id, action_code="model_config.update", after_snapshot=self._model_config_dict(session, item), trace_id=payload.get("_trace_id"))
             return self._model_config_dict(session, item)
+
+    @staticmethod
+    def _system_parameter_dict(item: SystemParameter) -> dict[str, Any]:
+        return {"id": str(item.id), "param_key": item.param_key, "param_value": item.param_value, "scope": item.scope, "status": item.status, "created_at": _iso(item.created_at), "updated_at": _iso(item.updated_at)}
+
+    def list_system_parameters(self) -> list[dict[str, Any]]:
+        return self.list_config_entries("global")
+
+    def list_config_entries(self, scope: str) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            return [self._system_parameter_dict(item) for item in session.scalars(select(SystemParameter).where(SystemParameter.scope == scope).order_by(SystemParameter.param_key))]
+
+    def upsert_config_entry(self, key: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.session_factory() as session, session.begin():
+            item = session.scalar(select(SystemParameter).where(SystemParameter.param_key == key))
+            if not item:
+                item = SystemParameter(param_key=key, param_value=payload.get("param_value") or {}, scope=payload.get("scope", "global"), status=payload.get("status", "active"))
+                session.add(item)
+            else:
+                item.param_value = payload.get("param_value") or {}
+                item.scope = payload.get("scope", item.scope)
+                item.status = payload.get("status", item.status)
+            session.flush()
+            self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="system_parameter", entity_id=item.id, action_code="system_parameter.upsert", after_snapshot=self._system_parameter_dict(item), trace_id=payload.get("_trace_id"))
+            return self._system_parameter_dict(item)
 
     def get_queue_job(self, job_id: str) -> dict[str, Any] | None:
         job_uuid = _uuid(job_id)

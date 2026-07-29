@@ -296,8 +296,11 @@
 | `POST` | `/api/v1/settings/models` | 新增模型配置 |
 | `PATCH` | `/api/v1/settings/models/{config_id}` | 更新模型配置状态和运行参数 |
 | `GET` | `/api/v1/settings/issue-categories` | 问题分类 |
+| `POST` | `/api/v1/settings/issue-categories` | 新增或更新问题分类 |
 | `GET` | `/api/v1/settings/report-templates` | 报告模板 |
+| `POST` | `/api/v1/settings/report-templates` | 新增或更新报告模板 |
 | `GET` | `/api/v1/settings/system-parameters` | 系统参数 |
+| `PUT` | `/api/v1/settings/system-parameters/{param_key}` | 新增或更新系统参数 |
 | `GET` | `/api/v1/jobs` | 异步作业 |
 | `POST` | `/api/v1/jobs/{job_id}/run` | 管理员触发待执行作业 |
 | `POST` | `/api/v1/jobs/{job_id}/retry` | 失败作业重新入队 |

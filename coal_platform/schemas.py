@@ -185,6 +185,29 @@ class ModelConfigUpdateRequest(BaseModel):
     status: str | None = None
 
 
+class IssueCategoryRequest(BaseModel):
+    code: str
+    name: str
+    default_severity: str = "一般"
+    description: str | None = None
+    status: str = "active"
+
+
+class ReportTemplateRequest(BaseModel):
+    template_code: str
+    template_name: str
+    report_type: str = "formal"
+    template_body: str
+    version_no: int = Field(default=1, ge=1)
+    status: str = "draft"
+
+
+class SystemParameterRequest(BaseModel):
+    param_value: dict[str, Any]
+    scope: str = "global"
+    status: str = "active"
+
+
 class ReportCreateRequest(BaseModel):
     round_id: str
     report_type: str = "formal"

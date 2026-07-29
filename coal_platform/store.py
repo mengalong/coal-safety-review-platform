@@ -278,8 +278,10 @@ class DemoStore:
         }
 
         self.system_parameters = {
-            "param_1": {"param_key": "default_remaining_months", "param_value": 6, "scope": "global"},
-            "param_2": {"param_key": "max_task_parallelism", "param_value": 4, "scope": "global"},
+            "default_remaining_months": {"param_key": "default_remaining_months", "param_value": {"value": 6}, "scope": "global", "status": "active"},
+            "max_task_parallelism": {"param_key": "max_task_parallelism", "param_value": {"value": 4}, "scope": "global", "status": "active"},
+            "issue_category:standard_compliance": {"param_key": "issue_category:standard_compliance", "param_value": {"code": "standard_compliance", "name": "标准符合性", "default_severity": "一般"}, "scope": "issue_category", "status": "active"},
+            "report_template:formal_default": {"param_key": "report_template:formal_default", "param_value": {"template_code": "formal_default", "template_name": "正式报告默认模板", "report_type": "formal", "template_body": "{{ report_no }}\n{{ conclusion }}", "version_no": 1}, "scope": "report_template", "status": "draft"},
         }
 
     def initialize(self, seed_demo_data: bool = True) -> None:
@@ -1385,7 +1387,17 @@ class DemoStore:
             return deepcopy(item)
 
     def list_system_parameters(self) -> list[dict]:
-        return [deepcopy(item) for item in self.system_parameters.values()]
+        return self.list_config_entries("global")
+
+    def list_config_entries(self, scope: str) -> list[dict]:
+        return [deepcopy(item) for item in self.system_parameters.values() if item.get("scope") == scope]
+
+    def upsert_config_entry(self, key: str, payload: dict) -> dict:
+        with self._lock:
+            item = self.system_parameters.get(key, {"param_key": key})
+            item.update(param_value=deepcopy(payload.get("param_value") or {}), scope=payload.get("scope", "global"), status=payload.get("status", "active"), updated_at=_now())
+            self.system_parameters[key] = item
+            return deepcopy(item)
 
     def list_operation_logs(self) -> list[dict]:
         return []

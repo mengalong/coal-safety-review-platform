@@ -164,6 +164,22 @@ def test_admin_can_manage_model_configuration_without_exposing_api_key() -> None
         assert updated.json()["data"]["status"] == "disabled"
 
 
+def test_admin_can_manage_categories_templates_and_system_parameters() -> None:
+    with _client() as client:
+        reviewer_headers = _login(client)
+        assert client.post("/api/v1/settings/issue-categories", headers=reviewer_headers, json={"code": "new", "name": "新分类"}).status_code == 403
+        admin_headers = _login(client, login_name="admin")
+        category = client.post("/api/v1/settings/issue-categories", headers=admin_headers, json={"code": "new", "name": "新分类", "default_severity": "提示"})
+        assert category.status_code == 201
+        assert category.json()["data"]["code"] == "new"
+        template = client.post("/api/v1/settings/report-templates", headers=admin_headers, json={"template_code": "new_template", "template_name": "新模板", "template_body": "{{ report_no }}"})
+        assert template.status_code == 201
+        assert template.json()["data"]["template_code"] == "new_template"
+        parameter = client.put("/api/v1/settings/system-parameters/retry_limit", headers=admin_headers, json={"param_value": {"value": 5}})
+        assert parameter.status_code == 200
+        assert parameter.json()["data"]["param_value"]["value"] == 5
+
+
 def test_reviewer_cannot_access_admin_user_list() -> None:
     with _client() as client:
         reviewer_headers = _login(client)

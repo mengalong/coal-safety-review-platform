@@ -18,6 +18,7 @@ from coal_platform.schemas import (
     BasicInfoPayload,
     DynamicItemDecisionRequest,
     ExecutionAttemptRequest,
+    IssueCategoryRequest,
     IssueUpdateRequest,
     LocalRerunRequest,
     LoginRequest,
@@ -25,6 +26,7 @@ from coal_platform.schemas import (
     ModelConfigRequest,
     ModelConfigUpdateRequest,
     ReportCreateRequest,
+    ReportTemplateRequest,
     RoundCreateRequest,
     RoundRuleAssemblyRequest,
     RuleCreateRequest,
@@ -37,6 +39,7 @@ from coal_platform.schemas import (
     StandardRelationPayload,
     StandardVersionAbolishRequest,
     StandardVersionCreateRequest,
+    SystemParameterRequest,
     TaskCreateRequest,
 )
 from coal_platform.store_protocol import PlatformStore
@@ -1167,15 +1170,36 @@ def list_system_parameters(request: Request) -> dict:
     return _ok(request.app.state.store.list_system_parameters())
 
 
+@settings_router.put("/system-parameters/{param_key}", dependencies=[Depends(require_admin)])
+def upsert_system_parameter(param_key: str, payload: SystemParameterRequest, request: Request) -> dict:
+    data = payload.model_dump()
+    data["scope"] = "global"
+    data.update(_operation_context(request))
+    return _ok(request.app.state.store.upsert_config_entry(param_key, data))
+
+
 @settings_router.get("/issue-categories")
-def list_issue_categories() -> dict:
-    return _ok(
-        [
-            {"code": "cross_file_consistency", "name": "跨文件一致性"},
-            {"code": "standard_compliance", "name": "标准符合性"},
-            {"code": "controlled_parts", "name": "受控件"},
-        ]
-    )
+def list_issue_categories(request: Request) -> dict:
+    return _ok([item["param_value"] | {"status": item["status"]} for item in request.app.state.store.list_config_entries("issue_category")])
+
+
+@settings_router.post("/issue-categories", dependencies=[Depends(require_admin)])
+def upsert_issue_category(payload: IssueCategoryRequest, request: Request) -> JSONResponse:
+    data = {"scope": "issue_category", "status": payload.status, "param_value": payload.model_dump(exclude={"status"}), **_operation_context(request)}
+    item = request.app.state.store.upsert_config_entry(f"issue_category:{payload.code}", data)
+    return JSONResponse(status_code=201, content=_ok(item["param_value"] | {"status": item["status"]}))
+
+
+@settings_router.get("/report-templates")
+def list_report_templates(request: Request) -> dict:
+    return _ok([item["param_value"] | {"status": item["status"]} for item in request.app.state.store.list_config_entries("report_template")])
+
+
+@settings_router.post("/report-templates", dependencies=[Depends(require_admin)])
+def upsert_report_template(payload: ReportTemplateRequest, request: Request) -> JSONResponse:
+    data = {"scope": "report_template", "status": payload.status, "param_value": payload.model_dump(exclude={"status"}), **_operation_context(request)}
+    item = request.app.state.store.upsert_config_entry(f"report_template:{payload.template_code}", data)
+    return JSONResponse(status_code=201, content=_ok(item["param_value"] | {"status": item["status"]}))
 
 
 @settings_router.get("/audit-stages")
