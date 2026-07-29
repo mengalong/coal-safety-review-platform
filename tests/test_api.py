@@ -569,6 +569,20 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
         assert publish_check.status_code == 200
         assert publish_check.json()["data"]["can_publish"] is False
         assert "EXECUTION_INCOMPLETE" in {item["code"] for item in publish_check.json()["data"]["blockers"]}
+        report = client.post(
+            "/api/v1/reports",
+            headers=headers,
+            json={"round_id": task["current_round_id"], "report_type": "formal", "conclusion": "through"},
+        )
+        assert report.status_code == 201
+        assert report.json()["data"]["status"] == "draft"
+        blocked_publish = client.post(
+            f"/api/v1/reports/{report.json()['data']['id']}/publish",
+            headers=headers,
+            json={"reason": "尝试发布"},
+        )
+        assert blocked_publish.status_code == 422
+        assert blocked_publish.json()["detail"]["blockers"]
 
         repeated = client.post(
             f"/api/v1/rounds/{task['current_round_id']}/rules/assemble",

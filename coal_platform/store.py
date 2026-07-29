@@ -1194,6 +1194,43 @@ class DemoStore:
     def list_reports(self) -> list[dict]:
         return [deepcopy(item) for item in self.reports.values()]
 
+    def get_report(self, report_id: str) -> dict | None:
+        _key, report = self._find_record(self.reports, report_id)
+        return deepcopy(report) if report else None
+
+    def create_report(self, payload: dict) -> dict | None:
+        task, round_item = self._find_round(payload.get("round_id", ""))
+        if not task or not round_item:
+            return None
+        version_no = sum(1 for item in self.reports.values() if item.get("round_id") == round_item["id"]) + 1
+        report_id = str(uuid4())
+        report = {
+            "id": report_id, "round_id": round_item["id"],
+            "report_no": f"{task['task_no']}-REP-V{version_no}",
+            "report_type": payload.get("report_type", "formal"), "version_no": version_no,
+            "conclusion": payload.get("conclusion", "through"), "status": "draft",
+            "word_object_key": None, "pdf_object_key": None,
+            "published_at": None, "created_at": _now(),
+        }
+        self.reports[report_id] = report
+        return deepcopy(report)
+
+    def publish_report(self, report_id: str, payload: dict) -> dict | None:
+        _key, report = self._find_record(self.reports, report_id)
+        if not report:
+            return None
+        check = self.check_round_publishability(report["round_id"])
+        if check and not check["can_publish"]:
+            raise ValueError({"message": "round is not publishable", "blockers": check["blockers"]})
+        report["status"] = "published"
+        report["published_at"] = _now()
+        task, round_item = self._find_round(report["round_id"])
+        if task and round_item:
+            task["status"] = "completed"
+            task["final_conclusion"] = report["conclusion"]
+            round_item["status"] = "completed"
+        return deepcopy(report)
+
     def list_issues(self, round_id: str | None = None) -> list[dict]:
         items = self.issues.values()
         if round_id:

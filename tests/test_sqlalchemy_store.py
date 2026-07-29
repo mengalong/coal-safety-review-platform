@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -125,6 +126,12 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     publish_check = store.check_round_publishability(task["current_round_id"])
     assert publish_check and publish_check["can_publish"] is False
     assert any(item["code"] == "EXECUTION_INCOMPLETE" for item in publish_check["blockers"])
+    report = store.create_report(
+        {"round_id": task["current_round_id"], "report_type": "formal", "conclusion": "through"}
+    )
+    assert report and report["status"] == "draft"
+    with pytest.raises(ValueError):
+        store.publish_report(report["id"], {"reason": "尝试发布"})
     updated = store.record_execution_attempt(
         executions[0]["id"],
         {

@@ -23,6 +23,7 @@ from coal_platform.models import (
     IssueSource,
     OperationLog,
     QueueJob,
+    Report,
     RoundRule,
     RoundStandard,
     RoundStandardCoverage,
@@ -2163,6 +2164,89 @@ class SqlAlchemyStore(DemoStore):
             if round_uuid:
                 query = query.where(AuditIssue.round_id == round_uuid)
             return [self._issue_dict(session, item) for item in session.scalars(query)]
+
+    @staticmethod
+    def _report_dict(report: Report) -> dict[str, Any]:
+        return {
+            "id": str(report.id), "round_id": str(report.round_id), "report_no": report.report_no,
+            "report_type": report.report_type, "version_no": report.version_no,
+            "conclusion": report.conclusion, "status": report.status,
+            "word_object_key": report.word_object_key, "pdf_object_key": report.pdf_object_key,
+            "published_at": _iso(report.published_at), "created_at": _iso(report.created_at),
+            "updated_at": _iso(report.updated_at),
+        }
+
+    def list_reports(self) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            items = session.scalars(select(Report).order_by(Report.created_at.desc())).all()
+            return [self._report_dict(item) for item in items]
+
+    def get_report(self, report_id: str) -> dict[str, Any] | None:
+        report_uuid = _uuid(report_id)
+        if not report_uuid:
+            return None
+        with self.session_factory() as session:
+            report = session.get(Report, report_uuid)
+            return self._report_dict(report) if report else None
+
+    def create_report(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        round_uuid = _uuid(payload.get("round_id"))
+        if not round_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            round_item = session.get(AuditRound, round_uuid)
+            task = session.get(AuditTask, round_item.task_id) if round_item else None
+            if not round_item or not task:
+                return None
+            version_no = (session.scalar(
+                select(func.max(Report.version_no)).where(Report.round_id == round_item.id)
+            ) or 0) + 1
+            report = Report(
+                round_id=round_item.id, report_no=f"{task.task_no}-REP-V{version_no}",
+                report_type=payload.get("report_type", "formal"), version_no=version_no,
+                conclusion=payload.get("conclusion", "through"), status="draft",
+            )
+            session.add(report)
+            session.flush()
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"), entity_type="report",
+                entity_id=report.id, action_code="report.create",
+                after_snapshot={"report_no": report.report_no, "round_id": str(round_item.id)},
+                trace_id=payload.get("_trace_id"),
+            )
+            return self._report_dict(report)
+
+    def publish_report(self, report_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        report_snapshot = self.get_report(report_id)
+        if not report_snapshot:
+            return None
+        check = self.check_round_publishability(report_snapshot["round_id"])
+        if check and not check["can_publish"]:
+            raise ValueError({"message": "round is not publishable", "blockers": check["blockers"]})
+        report_uuid = _uuid(report_id)
+        with self.session_factory() as session, session.begin():
+            report = session.get(Report, report_uuid)
+            if not report:
+                return None
+            round_item = session.get(AuditRound, report.round_id)
+            task = session.get(AuditTask, round_item.task_id) if round_item else None
+            report.status = "published"
+            report.published_at = datetime.now(UTC)
+            if round_item:
+                round_item.status = "completed"
+            if task:
+                task.status = "completed"
+                task.final_conclusion = report.conclusion
+            self._log(
+                session,
+                operator_user_id=payload.get("_operator_user_id"), entity_type="report",
+                entity_id=report.id, action_code="report.publish",
+                after_snapshot={"status": "published", "conclusion": report.conclusion},
+                reason=payload.get("reason"), trace_id=payload.get("_trace_id"),
+            )
+            session.flush()
+            return self._report_dict(report)
 
     def get_issue(self, issue_id: str) -> dict[str, Any] | None:
         issue_uuid = _uuid(issue_id)

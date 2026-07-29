@@ -807,19 +807,54 @@ def get_executor(executor_code: str, request: Request) -> dict:
 
 @reports_router.get("")
 def list_reports(request: Request) -> dict:
-    return _ok(request.app.state.store.list_reports())
+    items = request.app.state.store.list_reports()
+    if _current_user(request)["role"] != "admin":
+        visible = []
+        for item in items:
+            if not item.get("round_id"):
+                continue
+            round_item = request.app.state.store.get_round(item["round_id"])
+            task = request.app.state.store.get_task(round_item.get("task_id", "")) if round_item else None
+            if task and task.get("owner_user_id") == _current_user(request)["id"]:
+                visible.append(item)
+        items = visible
+    return _ok(items)
 
 
 @reports_router.post("")
 def create_report(payload: ReportCreateRequest, request: Request) -> JSONResponse:
-    report = {
-        "id": "temp",
-        "report_no": "SH-2026-000000-REP-V1",
-        "report_type": payload.report_type,
-        "conclusion": payload.conclusion,
-        "status": "draft",
-    }
+    round_item = request.app.state.store.get_round(payload.round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    report = request.app.state.store.create_report(data)
+    if not report:
+        raise HTTPException(status_code=404, detail="round not found")
     return JSONResponse(status_code=201, content=_ok(report, "report created"))
+
+
+@reports_router.post("/{report_id}/publish")
+def publish_report(report_id: str, payload: dict, request: Request) -> dict:
+    report = request.app.state.store.get_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="report not found")
+    round_item = request.app.state.store.get_round(report.get("round_id", ""))
+    task = request.app.state.store.get_task(round_item.get("task_id", "")) if round_item else None
+    if not task:
+        raise HTTPException(status_code=404, detail="report round not found")
+    _ensure_task_access(request, task)
+    data = dict(payload)
+    data.update(_operation_context(request))
+    try:
+        published = request.app.state.store.publish_report(report_id, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=exc.args[0]) from exc
+    return _ok(published, "report published")
 
 
 @issues_router.get("")

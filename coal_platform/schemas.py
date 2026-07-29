@@ -173,5 +173,6 @@ class ModelConfigRequest(BaseModel):
 
 
 class ReportCreateRequest(BaseModel):
+    round_id: str
     report_type: str = "formal"
     conclusion: str = "through"
