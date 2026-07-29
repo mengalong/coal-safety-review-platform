@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from hashlib import sha256
 from pathlib import Path
 from typing import Annotated
@@ -14,6 +15,7 @@ from coal_platform.config import get_settings
 from coal_platform.document_parser import MAX_FILE_BYTES, DocumentParseError, render_pdf_region
 from coal_platform.executor_runtime import process_queue_job, run_rule_execution
 from coal_platform.model_gateway import ModelGatewayError
+from coal_platform.observability import render_metrics
 from coal_platform.report_renderer import render_docx, render_pdf
 from coal_platform.request_context import get_trace_id
 from coal_platform.rule_engine import FIXED_AUDIT_STAGES, RuleConfigurationError
@@ -142,6 +144,17 @@ def readyz(request: Request) -> dict:
     if not request.app.state.store.healthcheck():
         raise HTTPException(status_code=503, detail="database is unavailable")
     return _ok({"status": "ready"})
+
+
+@health_router.get("/metrics", include_in_schema=False)
+def metrics(request: Request) -> Response:
+    authorization = request.headers.get("Authorization", "")
+    expected = get_settings().metrics_token.get_secret_value()
+    supplied = authorization[7:] if authorization.startswith("Bearer ") else ""
+    if not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="metrics authentication required")
+    content, media_type = render_metrics(request.app.state.store, get_settings())
+    return Response(content=content, media_type=media_type)
 
 
 @auth_router.post("/login", response_model=LoginResponse)

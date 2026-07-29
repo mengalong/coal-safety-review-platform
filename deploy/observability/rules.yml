@@ -1,0 +1,33 @@
+groups:
+  - name: coal-production
+    rules:
+      - alert: CoalApiUnavailable
+        expr: up{job="coal-api"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "煤矿安标平台 API 持续不可用"}
+      - alert: CoalWorkerOffline
+        expr: coal_dependency_up{dependency="worker"} == 0
+        for: 3m
+        labels: {severity: critical}
+        annotations: {summary: "审核 Worker 已离线"}
+      - alert: CoalDatabaseUnavailable
+        expr: coal_dependency_up{dependency="database"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: "PostgreSQL 数据库不可用"}
+      - alert: CoalQueueBacklog
+        expr: sum(coal_queue_jobs{status=~"queued|pending"}) > 20
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "审核队列持续积压超过 20 项"}
+      - alert: CoalModelFailureRateHigh
+        expr: coal_model_failure_ratio > 0.2
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "最近模型调用失败率超过 20%"}
+      - alert: CoalApiServerErrors
+        expr: sum(rate(coal_http_requests_total{status=~"5.."}[5m])) > 0.1
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "API 服务端错误持续升高"}

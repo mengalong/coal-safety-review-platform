@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     ocr_timeout_seconds: int = Field(default=120, ge=1, le=600)
     ocr_minimum_confidence: float = Field(default=0.35, ge=0, le=1)
     secret_key: str = "development-only-change-this-secret-key"
+    metrics_token: SecretStr = SecretStr("development-metrics-token")
     model_secret_key: SecretStr = SecretStr("development-only-change-this-model-secret-key")
     qianfan_api_key: SecretStr | None = None
     qianfan_base_url: str = "https://qianfan.baidubce.com/v2"
@@ -59,6 +60,9 @@ class Settings(BaseSettings):
             errors.append("COAL_STORAGE_BACKEND must be minio")
         if len(self.secret_key) < 32 or self.secret_key.startswith("development-only"):
             errors.append("COAL_SECRET_KEY must be a random value of at least 32 characters")
+        metrics_token = self.metrics_token.get_secret_value()
+        if len(metrics_token) < 32 or metrics_token.startswith("development-"):
+            errors.append("COAL_METRICS_TOKEN must be a random value of at least 32 characters")
         model_secret = self.model_secret_key.get_secret_value()
         if len(model_secret) < 32 or model_secret.startswith("development-only"):
             errors.append("COAL_MODEL_SECRET_KEY must be a random value of at least 32 characters")

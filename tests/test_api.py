@@ -112,6 +112,19 @@ def test_health_and_openapi_are_available() -> None:
         assert unauthorized.headers["WWW-Authenticate"] == "Bearer"
 
 
+def test_metrics_require_dedicated_token_and_export_runtime_state() -> None:
+    with _client() as client:
+        assert client.get("/api/v1/metrics").status_code == 401
+        response = client.get(
+            "/api/v1/metrics",
+            headers={"Authorization": "Bearer development-metrics-token"},
+        )
+        assert response.status_code == 200
+        assert "coal_http_requests_total" in response.text
+        assert 'coal_queue_jobs{status="queued"}' in response.text
+        assert "coal_model_failure_ratio" in response.text
+
+
 def test_login_rejects_invalid_password_and_returns_current_user() -> None:
     with _client() as client:
         rejected = client.post(

@@ -342,6 +342,7 @@
 | `POST` | `/api/v1/jobs/{job_id}/cancel` | 取消作业 |
 | `GET` | `/api/v1/monitoring` | 队列和 Worker 指标 |
 | `GET` | `/api/v1/monitoring/alerts` | 系统告警列表 |
+| `GET` | `/api/v1/metrics` | Prometheus 指标，使用独立 `COAL_METRICS_TOKEN` Bearer 认证且不进入 OpenAPI |
 | `GET` | `/api/v1/logs` | 操作日志 |
 
 作业控制语义：

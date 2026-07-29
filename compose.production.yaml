@@ -15,6 +15,7 @@ x-api-environment: &api-environment
   COAL_OCR_BACKEND: tesseract
   COAL_OCR_LANGUAGES: chi_sim+eng
   COAL_SECRET_KEY: ${COAL_SECRET_KEY:?required}
+  COAL_METRICS_TOKEN: ${COAL_METRICS_TOKEN:?required}
   COAL_MODEL_SECRET_KEY: ${COAL_MODEL_SECRET_KEY:?required}
   COAL_QIANFAN_API_KEY: ${COAL_QIANFAN_API_KEY:?required}
   COAL_CORS_ORIGINS: '["${COAL_PUBLIC_ORIGIN:?required}"]'
@@ -140,6 +141,85 @@ services:
         condition: service_healthy
     security_opt: ["no-new-privileges:true"]
 
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["observability"]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=30d"]
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/rules.yml:/etc/prometheus/rules.yml:ro
+      - coal_prometheus_data:/prometheus
+    secrets: [metrics_token]
+    networks: [application]
+    depends_on:
+      api:
+        condition: service_healthy
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    profiles: ["observability"]
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
+    volumes:
+      - ./deploy/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - coal_alertmanager_data:/alertmanager
+    networks: [application]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  alert-notifier:
+    build:
+      context: .
+    profiles: ["observability"]
+    command: uvicorn coal_platform.alert_notifier:app --host 0.0.0.0 --port 8080
+    environment:
+      COAL_ALERT_WEBHOOK_URL: ${COAL_ALERT_WEBHOOK_URL:?required}
+      COAL_ALERT_WEBHOOK_TOKEN: ${COAL_ALERT_WEBHOOK_TOKEN:-}
+    read_only: true
+    tmpfs: [/tmp]
+    networks: [application, edge]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  loki:
+    image: grafana/loki:3.5.3
+    profiles: ["observability"]
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./deploy/observability/loki.yml:/etc/loki/local-config.yaml:ro
+      - coal_loki_data:/loki
+    networks: [application]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  promtail:
+    image: grafana/promtail:3.5.3
+    profiles: ["observability"]
+    command: ["-config.file=/etc/promtail/config.yml"]
+    volumes:
+      - ./deploy/observability/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - coal_promtail_positions:/tmp
+    networks: [application]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    profiles: ["observability"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${COAL_GRAFANA_ADMIN_PASSWORD:?required}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "${COAL_GRAFANA_BIND:-127.0.0.1}:3000:3000"
+    volumes:
+      - ./deploy/observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/coal.yml:ro
+      - coal_grafana_data:/var/lib/grafana
+    networks: [application]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
 networks:
   edge:
   application:
@@ -151,3 +231,12 @@ volumes:
   coal_postgres_data:
   coal_redis_data:
   coal_minio_data:
+  coal_prometheus_data:
+  coal_alertmanager_data:
+  coal_loki_data:
+  coal_promtail_positions:
+  coal_grafana_data:
+
+secrets:
+  metrics_token:
+    file: ${COAL_METRICS_TOKEN_FILE:?required}

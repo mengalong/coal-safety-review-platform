@@ -1,3 +1,4 @@
+import time
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from coal_platform.api import register_routers
 from coal_platform.config import get_settings
 from coal_platform.database import SessionLocal
 from coal_platform.model_gateway import ModelGateway, bootstrap_qianfan_models
+from coal_platform.observability import configure_logging, observe_request
 from coal_platform.ocr import OCRBackend, build_ocr_backend
 from coal_platform.request_context import get_trace_id, trace_id_context
 from coal_platform.sqlalchemy_store import SqlAlchemyStore
@@ -40,6 +42,7 @@ def create_app(
     model_gateway: ModelGateway | None = None,
 ) -> FastAPI:
     settings = get_settings()
+    configure_logging(settings.log_level)
     active_store = store
     if active_store is None:
         active_store = SqlAlchemyStore(SessionLocal) if settings.store_backend == "database" else DemoStore.seed()
@@ -75,11 +78,16 @@ def create_app(
     async def attach_trace_id(request: Request, call_next):
         trace_id = request.headers.get("X-Trace-Id") or uuid4().hex
         token = trace_id_context.set(trace_id)
+        started = time.monotonic()
+        status = 500
         try:
             response = await call_next(request)
+            status = response.status_code
             response.headers["X-Trace-Id"] = trace_id
             return response
         finally:
+            route = getattr(request.scope.get("route"), "path", request.url.path)
+            observe_request(request.method, route, status, started)
             trace_id_context.reset(token)
 
     @app.exception_handler(HTTPException)

@@ -12,6 +12,7 @@ def production_settings(**overrides) -> Settings:
         "database_url": "postgresql+psycopg://coal:secret@postgres:5432/coal",
         "storage_backend": "minio",
         "secret_key": "a" * 32,
+        "metrics_token": "c" * 32,
         "model_secret_key": "b" * 32,
         "cors_origins": ["https://coal-review.example.com"],
     }
@@ -31,6 +32,7 @@ def test_production_settings_accept_secure_external_services() -> None:
         ({"database_url": "sqlite:///coal.db"}, "COAL_DATABASE_URL"),
         ({"storage_backend": "local"}, "COAL_STORAGE_BACKEND"),
         ({"secret_key": "short"}, "COAL_SECRET_KEY"),
+        ({"metrics_token": "short"}, "COAL_METRICS_TOKEN"),
         ({"model_secret_key": "short"}, "COAL_MODEL_SECRET_KEY"),
         ({"cors_origins": ["http://localhost:8080"]}, "COAL_CORS_ORIGINS"),
     ],
