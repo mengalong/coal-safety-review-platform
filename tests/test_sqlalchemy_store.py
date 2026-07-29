@@ -132,6 +132,11 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     assert report and report["status"] == "draft"
     with pytest.raises(ValueError):
         store.publish_report(report["id"], {"reason": "尝试发布"})
+    store.check_round_publishability = lambda _round_id: {"can_publish": True, "blockers": []}
+    published_report = store.publish_report(report["id"], {"reason": "发布检查已通过"})
+    assert published_report and published_report["status"] == "published"
+    assert published_report["word_object_key"].endswith(".docx")
+    assert published_report["pdf_object_key"].endswith(".pdf")
     updated = store.record_execution_attempt(
         executions[0]["id"],
         {

@@ -1224,6 +1224,8 @@ class DemoStore:
             raise ValueError({"message": "round is not publishable", "blockers": check["blockers"]})
         report["status"] = "published"
         report["published_at"] = _now()
+        report["word_object_key"] = f"reports/{report['report_no']}.docx"
+        report["pdf_object_key"] = f"reports/{report['report_no']}.pdf"
         task, round_item = self._find_round(report["round_id"])
         if task and round_item:
             task["status"] = "completed"

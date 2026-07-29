@@ -821,6 +821,19 @@ def list_reports(request: Request) -> dict:
     return _ok(items)
 
 
+@reports_router.get("/{report_id}")
+def get_report(report_id: str, request: Request) -> dict:
+    report = request.app.state.store.get_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="report not found")
+    round_item = request.app.state.store.get_round(report.get("round_id", ""))
+    task = request.app.state.store.get_task(round_item.get("task_id", "")) if round_item else None
+    if not task:
+        raise HTTPException(status_code=404, detail="report round not found")
+    _ensure_task_access(request, task)
+    return _ok(report)
+
+
 @reports_router.post("")
 def create_report(payload: ReportCreateRequest, request: Request) -> JSONResponse:
     round_item = request.app.state.store.get_round(payload.round_id)

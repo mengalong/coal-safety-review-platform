@@ -2233,6 +2233,8 @@ class SqlAlchemyStore(DemoStore):
             task = session.get(AuditTask, round_item.task_id) if round_item else None
             report.status = "published"
             report.published_at = datetime.now(UTC)
+            report.word_object_key = f"reports/{report.report_no}.docx"
+            report.pdf_object_key = f"reports/{report.report_no}.pdf"
             if round_item:
                 round_item.status = "completed"
             if task:

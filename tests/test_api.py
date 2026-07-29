@@ -576,6 +576,11 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
         )
         assert report.status_code == 201
         assert report.json()["data"]["status"] == "draft"
+        report_detail = client.get(
+            f"/api/v1/reports/{report.json()['data']['id']}", headers=headers
+        )
+        assert report_detail.status_code == 200
+        assert report_detail.json()["data"]["report_no"] == report.json()["data"]["report_no"]
         blocked_publish = client.post(
             f"/api/v1/reports/{report.json()['data']['id']}/publish",
             headers=headers,
