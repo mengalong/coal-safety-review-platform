@@ -31,6 +31,12 @@ write_record() {
     echo "status=$STATUS"
     echo "rolled_back_at=$STAMP"
     echo "elapsed_seconds=$((FINISHED_AT - STARTED_AT))"
+    echo "candidate_commit=${CURRENT_COMMIT:-unknown}"
+    echo "previous_commit=${PREVIOUS_COMMIT:-unknown}"
+    echo "candidate_api_image=${CURRENT_API_IMAGE:-unknown}"
+    echo "candidate_web_image=${CURRENT_WEB_IMAGE:-unknown}"
+    echo "previous_api_image=${PREVIOUS_API_IMAGE:-unknown}"
+    echo "previous_web_image=${PREVIOUS_WEB_IMAGE:-unknown}"
     echo "previous_env=$PREVIOUS_ENV"
     echo "current_env=$CURRENT_ENV"
     echo "backup=$BACKUP"
@@ -42,6 +48,50 @@ write_record() {
   exit "$EXIT_CODE"
 }
 trap write_record 0 INT TERM
+
+test -f "$PREVIOUS_ENV" || { echo "Previous environment file not found: $PREVIOUS_ENV" >&2; exit 2; }
+test -f "$CURRENT_ENV" || { echo "Current environment file not found: $CURRENT_ENV" >&2; exit 2; }
+PREVIOUS_COMMIT=$(sed -n 's/^COAL_RELEASE_COMMIT=//p' "$PREVIOUS_ENV")
+CURRENT_COMMIT=$(sed -n 's/^COAL_RELEASE_COMMIT=//p' "$CURRENT_ENV")
+PREVIOUS_API_IMAGE=$(sed -n 's/^COAL_API_IMAGE=//p' "$PREVIOUS_ENV")
+PREVIOUS_WEB_IMAGE=$(sed -n 's/^COAL_WEB_IMAGE=//p' "$PREVIOUS_ENV")
+CURRENT_API_IMAGE=$(sed -n 's/^COAL_API_IMAGE=//p' "$CURRENT_ENV")
+CURRENT_WEB_IMAGE=$(sed -n 's/^COAL_WEB_IMAGE=//p' "$CURRENT_ENV")
+
+if [ "$DRILL_MODE" = production ]; then
+  printf '%s' "$PREVIOUS_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || {
+    echo "previous COAL_RELEASE_COMMIT must be a full 40-character lowercase Git commit" >&2
+    exit 1
+  }
+  printf '%s' "$CURRENT_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || {
+    echo "current COAL_RELEASE_COMMIT must be a full 40-character lowercase Git commit" >&2
+    exit 1
+  }
+  test "$PREVIOUS_COMMIT" != "$CURRENT_COMMIT" || {
+    echo "previous and current COAL_RELEASE_COMMIT must differ" >&2
+    exit 1
+  }
+  printf '%s' "$PREVIOUS_API_IMAGE" | grep -Eq '^[^[:space:]]+@sha256:[0-9a-f]{64}$' || {
+    echo "previous COAL_API_IMAGE must use a complete immutable sha256 digest" >&2
+    exit 1
+  }
+  printf '%s' "$PREVIOUS_WEB_IMAGE" | grep -Eq '^[^[:space:]]+@sha256:[0-9a-f]{64}$' || {
+    echo "previous COAL_WEB_IMAGE must use a complete immutable sha256 digest" >&2
+    exit 1
+  }
+  printf '%s' "$CURRENT_API_IMAGE" | grep -Eq '^[^[:space:]]+@sha256:[0-9a-f]{64}$' || {
+    echo "current COAL_API_IMAGE must use a complete immutable sha256 digest" >&2
+    exit 1
+  }
+  printf '%s' "$CURRENT_WEB_IMAGE" | grep -Eq '^[^[:space:]]+@sha256:[0-9a-f]{64}$' || {
+    echo "current COAL_WEB_IMAGE must use a complete immutable sha256 digest" >&2
+    exit 1
+  }
+  if [ "$PREVIOUS_API_IMAGE" = "$CURRENT_API_IMAGE" ] && [ "$PREVIOUS_WEB_IMAGE" = "$CURRENT_WEB_IMAGE" ]; then
+    echo "previous and current API/Web images must not both be identical" >&2
+    exit 1
+  fi
+fi
 
 current_compose() {
   docker compose --env-file "$CURRENT_ENV" -f compose.production.yaml "$@"

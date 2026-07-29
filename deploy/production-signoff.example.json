@@ -1,0 +1,42 @@
+{
+  "candidate_commit": "0000000000000000000000000000000000000000",
+  "environment": "生产环境名称与区域",
+  "host_specification": "节点数量、CPU、内存、磁盘与操作系统",
+  "test_window": {
+    "started_at": "2026-07-29T09:00:00+08:00",
+    "ended_at": "2026-07-29T12:00:00+08:00"
+  },
+  "security_scan_result": {
+    "status": "passed",
+    "evidence": "安全扫描报告编号与归档路径"
+  },
+  "load_test_result": {
+    "status": "passed",
+    "evidence": "压力测试结果编号与归档路径"
+  },
+  "backup_restore_result": {
+    "status": "passed",
+    "evidence": "备份编号、RPO、RTO 与恢复记录路径"
+  },
+  "open_defects": {
+    "blocking": 0,
+    "high": 0,
+    "accepted_medium": []
+  },
+  "release_record_sha256": "填写 64 位 SHA-256",
+  "release_uat_sha256": "填写 64 位 SHA-256",
+  "rollback_record_sha256": "填写 64 位 SHA-256",
+  "rollback_uat_sha256": "填写 64 位 SHA-256",
+  "business_signoff": {
+    "name": "业务验收人姓名",
+    "role": "业务代表",
+    "decision": "approved",
+    "signed_at": "2026-07-29T12:10:00+08:00"
+  },
+  "operations_signoff": {
+    "name": "运维验收人姓名",
+    "role": "运维代表",
+    "decision": "approved",
+    "signed_at": "2026-07-29T12:15:00+08:00"
+  }
+}

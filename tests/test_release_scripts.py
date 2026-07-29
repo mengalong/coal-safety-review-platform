@@ -76,3 +76,105 @@ def test_rollback_rejects_unknown_drill_mode(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "fifth argument must be --local-drill" in result.stderr
+
+
+def test_release_requires_explicit_full_candidate_commit(tmp_path: Path) -> None:
+    env_file = tmp_path / "production.env"
+    env_file.write_text(
+        f"COAL_API_IMAGE=registry.test/api@sha256:{'1' * 64}\n"
+        f"COAL_WEB_IMAGE=registry.test/web@sha256:{'2' * 64}\n",
+        encoding="utf-8",
+    )
+    env_file.chmod(0o600)
+
+    result = subprocess.run(
+        ["sh", "scripts/release.sh", "--confirm", str(env_file), str(tmp_path / "backups")],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "COAL_RELEASE_COMMIT must be a full 40-character" in result.stderr
+
+
+def test_release_rejects_truncated_image_digest(tmp_path: Path) -> None:
+    env_file = tmp_path / "production.env"
+    env_file.write_text(
+        f"COAL_RELEASE_COMMIT={'a' * 40}\n"
+        "COAL_API_IMAGE=registry.test/api@sha256:1234\n"
+        f"COAL_WEB_IMAGE=registry.test/web@sha256:{'2' * 64}\n",
+        encoding="utf-8",
+    )
+    env_file.chmod(0o600)
+
+    result = subprocess.run(
+        ["sh", "scripts/release.sh", "--confirm", str(env_file), str(tmp_path / "backups")],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "COAL_API_IMAGE must use a complete immutable sha256 digest" in result.stderr
+
+
+def test_formal_rollback_requires_previous_and_candidate_commits(tmp_path: Path) -> None:
+    previous_env = tmp_path / "previous.env"
+    current_env = tmp_path / "current.env"
+    image_values = (
+        f"COAL_API_IMAGE=registry.test/api@sha256:{'1' * 64}\n"
+        f"COAL_WEB_IMAGE=registry.test/web@sha256:{'2' * 64}\n"
+    )
+    previous_env.write_text(image_values, encoding="utf-8")
+    current_env.write_text(image_values, encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "sh",
+            "scripts/rollback.sh",
+            "--confirm",
+            str(previous_env),
+            str(tmp_path / "backup"),
+            str(current_env),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "previous COAL_RELEASE_COMMIT must be a full 40-character" in result.stderr
+
+
+def test_formal_rollback_rejects_identical_versions_before_stopping_services(tmp_path: Path) -> None:
+    previous_env = tmp_path / "previous.env"
+    current_env = tmp_path / "current.env"
+    environment = (
+        f"COAL_RELEASE_COMMIT={'a' * 40}\n"
+        f"COAL_API_IMAGE=registry.test/api@sha256:{'1' * 64}\n"
+        f"COAL_WEB_IMAGE=registry.test/web@sha256:{'2' * 64}\n"
+    )
+    previous_env.write_text(environment, encoding="utf-8")
+    current_env.write_text(environment, encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "sh",
+            "scripts/rollback.sh",
+            "--confirm",
+            str(previous_env),
+            str(tmp_path / "backup"),
+            str(current_env),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "previous and current COAL_RELEASE_COMMIT must differ" in result.stderr

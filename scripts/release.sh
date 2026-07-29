@@ -26,6 +26,7 @@ write_record() {
     echo "status=$STATUS"
     echo "released_at=$STAMP"
     echo "elapsed_seconds=$((FINISHED_AT - STARTED_AT))"
+    echo "candidate_commit=${RELEASE_COMMIT:-unknown}"
     echo "api_image=${API_IMAGE:-unknown}"
     echo "web_image=${WEB_IMAGE:-unknown}"
     echo "backup=${BACKUP_ARTIFACT:-pending}"
@@ -41,10 +42,22 @@ compose() {
   docker compose --env-file "$ENV_FILE" -f compose.production.yaml "$@"
 }
 
+test -f "$ENV_FILE" || { echo "Environment file not found: $ENV_FILE" >&2; exit 2; }
 API_IMAGE=$(sed -n 's/^COAL_API_IMAGE=//p' "$ENV_FILE")
 WEB_IMAGE=$(sed -n 's/^COAL_WEB_IMAGE=//p' "$ENV_FILE")
-case "$API_IMAGE" in *@sha256:*) ;; *) echo "COAL_API_IMAGE must use an immutable sha256 digest" >&2; exit 1 ;; esac
-case "$WEB_IMAGE" in *@sha256:*) ;; *) echo "COAL_WEB_IMAGE must use an immutable sha256 digest" >&2; exit 1 ;; esac
+RELEASE_COMMIT=$(sed -n 's/^COAL_RELEASE_COMMIT=//p' "$ENV_FILE")
+printf '%s' "$RELEASE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || {
+  echo "COAL_RELEASE_COMMIT must be a full 40-character lowercase Git commit" >&2
+  exit 1
+}
+printf '%s' "$API_IMAGE" | grep -Eq '^[^[:space:]]+@sha256:[0-9a-f]{64}$' || {
+  echo "COAL_API_IMAGE must use a complete immutable sha256 digest" >&2
+  exit 1
+}
+printf '%s' "$WEB_IMAGE" | grep -Eq '^[^[:space:]]+@sha256:[0-9a-f]{64}$' || {
+  echo "COAL_WEB_IMAGE must use a complete immutable sha256 digest" >&2
+  exit 1
+}
 
 scripts/security-baseline-check.sh "$ENV_FILE"
 compose pull api worker web

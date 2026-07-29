@@ -73,6 +73,18 @@ scripts/uat.sh --base-url https://coal-review.example.com:8443 \
 | 业务验收人 | 待签署 |
 | 运维验收人 | 待签署 |
 
+正式签署使用 `deploy/production-signoff.example.json` 记录目标环境、主机规格、测试窗口、安全扫描、压测、备份恢复、
+未关闭缺陷和两方批准。清单必须包含发布记录、发布完整 UAT、正式回退记录和回退完整 UAT 的 SHA-256，并通过：
+
+```bash
+scripts/verify-production-signoff.sh \
+  --release-record release.env --rollback-record rollback.env \
+  --signoff production-signoff.json --output production-signoff-result.json
+```
+
+验证结果不是电子签名服务，也不会代替验收人决策；它用于证明两方批准与同一候选 Commit、不可变镜像、备份和
+UAT 证据绑定，且本地 `--local-drill` 记录不能冒充正式回退。
+
 ## 6. 当前执行记录
 
 2026-07-29 在当前完整容器环境执行基础 UAT，8 项自动检查全部通过，耗时 2.27 秒。已验证登录与当前会话、
