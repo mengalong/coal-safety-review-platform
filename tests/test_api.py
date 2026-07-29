@@ -105,6 +105,26 @@ def test_start_audit_updates_task_and_round_status() -> None:
         assert detail["rounds"][0]["status"] == "auditing"
 
 
+def test_admin_can_run_a_rule_execution_and_create_issue() -> None:
+    with _client() as client:
+        reviewer_headers = _login(client)
+        created = client.post("/api/v1/tasks", headers=reviewer_headers, json={}).json()["data"]
+        client.post(f"/api/v1/rounds/{created['current_round_id']}/rules/assemble", headers=reviewer_headers, json={})
+        started = client.post(f"/api/v1/rounds/{created['current_round_id']}/audit/start", headers=reviewer_headers)
+        assert started.status_code == 202
+        executions = client.get(
+            f"/api/v1/rounds/{created['current_round_id']}/rule-executions", headers=reviewer_headers
+        ).json()["data"]
+        admin_headers = _login(client, login_name="admin")
+        execution = next(item for item in executions if item["status"] == "pending")
+        result = client.post(f"/api/v1/rule-executions/{execution['id']}/run", headers=admin_headers)
+        assert result.status_code == 200
+        assert result.json()["data"]["status"] in {"succeeded", "failed", "unable_to_determine"}
+        attempts = client.get(f"/api/v1/rule-executions/{execution['id']}/attempts", headers=admin_headers)
+        assert attempts.status_code == 200
+        assert len(attempts.json()["data"]) == 1
+
+
 def test_first_phase_read_endpoints_return_demo_data() -> None:
     with _client() as client:
         headers = _login(client)

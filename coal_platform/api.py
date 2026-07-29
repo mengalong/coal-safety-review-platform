@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from coal_platform.auth import access_token_expires_at, create_access_token, require_admin, require_user
+from coal_platform.executor_runtime import run_rule_execution
 from coal_platform.request_context import get_trace_id
 from coal_platform.rule_engine import FIXED_AUDIT_STAGES, RuleConfigurationError
 from coal_platform.schemas import (
@@ -569,6 +570,14 @@ def list_execution_attempts(execution_id: str, request: Request) -> dict:
     if task:
         _ensure_task_access(request, task)
     return _ok(request.app.state.store.list_execution_attempts(execution_id) or [])
+
+
+@rule_executions_router.post("/{execution_id}/run", dependencies=[Depends(require_admin)])
+def run_execution(execution_id: str, request: Request) -> dict:
+    result = run_rule_execution(request.app.state.store, execution_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="rule execution not found")
+    return _ok(result, "rule execution completed")
 
 
 @rule_executions_router.post("/{execution_id}/attempts")

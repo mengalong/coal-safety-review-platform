@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping
+from time import monotonic
+from typing import Any
+
+from coal_platform.store_protocol import PlatformStore
+
+
+def _issue(rule: Mapping[str, Any], description: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "issue_code": f"RULE-{rule.get('rule_code', 'UNKNOWN')}",
+        "title": rule.get("rule_name", "规则检查"),
+        "description": description,
+        "category_code": rule.get("default_issue_category", "technical_compliance"),
+        "severity": rule.get("default_severity", "一般"),
+        "system_conclusion": "failed",
+        "affects_conclusion": bool(rule.get("affects_suggested_conclusion", False)),
+        "customer_evidence": payload.get("evidence", []),
+        "standard_evidence": payload.get("standard_evidence", []),
+    }
+
+
+def evaluate_builtin(rule: Mapping[str, Any], parameters: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+    code = rule.get("executor_code")
+    values = payload.get("fields", payload)
+    values = values if isinstance(values, Mapping) else {}
+    passed = True
+    description = ""
+    if code == "required_field":
+        missing = [field for field in parameters.get("field_codes", []) if values.get(field) in (None, "")]
+        passed = not missing
+        description = f"缺少必填字段: {', '.join(missing)}" if missing else "必填字段均已提供"
+    elif code == "regex_format":
+        value = payload.get("value", values.get(parameters.get("field_code", ""), ""))
+        flags = re.IGNORECASE if "IGNORECASE" in parameters.get("flags", []) else 0
+        passed = re.fullmatch(parameters.get("pattern", ""), str(value), flags=flags) is not None
+        description = "字段格式符合要求" if passed else "字段格式不符合正则约束"
+    elif code in {"exact_compare", "normalized_compare"}:
+        compared = [values.get(field) for field in parameters.get("field_codes", [])]
+        if code == "normalized_compare":
+            compared = [str(value).strip().lower() if value is not None else None for value in compared]
+        passed = len(set(compared)) <= 1
+        description = "字段值一致" if passed else "字段值存在不一致"
+    elif code == "numeric_compare":
+        actual = payload.get("value")
+        operator = parameters.get("operator", "eq")
+        threshold = parameters.get("threshold")
+        passed = {"eq": actual == threshold, "ne": actual != threshold, "gt": actual > threshold,
+                  "gte": actual >= threshold, "lt": actual < threshold, "lte": actual <= threshold,
+                  "between": parameters.get("minimum") <= actual <= parameters.get("maximum")}.get(operator, False)
+        description = "数值满足约束" if passed else "数值不满足约束"
+    elif code == "evidence_required":
+        passed = len(payload.get("evidence", [])) >= parameters.get("minimum_customer_evidence", 0) and len(payload.get("standard_evidence", [])) >= parameters.get("minimum_standard_evidence", 0)
+        description = "证据数量满足要求" if passed else "证据数量不足"
+    else:
+        return {"outcome": "unable_to_determine", "warnings": [f"未注册内置执行器: {code}"]}
+    result = {"outcome": "passed" if passed else "failed", "normalized_input": dict(values), "description": description}
+    if not passed:
+        result["issue"] = _issue(rule, description, payload)
+    return result
+
+
+def run_rule_execution(store: PlatformStore, execution_id: str, input_payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    execution = store.get_rule_execution(execution_id)
+    if not execution:
+        return None
+    version = store.get_rule_version(execution["rule_version_id"])
+    if not version:
+        return None
+    rule = next((item for item in store.list_rules() if item.get("id") == version.get("rule_definition_id")), None)
+    if not rule:
+        return None
+    payload = input_payload or execution.get("input_snapshot") or {}
+    started = monotonic()
+    try:
+        result = evaluate_builtin({**rule, "executor_code": version.get("executor_code")}, version.get("parameters") or {}, payload)
+        status = "succeeded" if result["outcome"] == "passed" else result["outcome"]
+        return store.record_execution_attempt(execution_id, {
+            "status": status, "attempt_kind": "normal", "input_payload": payload,
+            "output_payload": result, "elapsed_ms": round((monotonic() - started) * 1000),
+        })
+    except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
+        return store.record_execution_attempt(execution_id, {
+            "status": "exception", "attempt_kind": "normal", "input_payload": payload,
+            "error_payload": {"code": "EXECUTOR_EXCEPTION", "message": str(exc)},
+            "elapsed_ms": round((monotonic() - started) * 1000),
+        })
