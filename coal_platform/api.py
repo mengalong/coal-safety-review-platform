@@ -826,6 +826,22 @@ def publish_rule(rule_version_id: str, request: Request) -> dict:
     return _ok(version, "rule version published")
 
 
+@rule_versions_router.post("/{rule_version_id}/disable", dependencies=[Depends(require_admin)])
+def disable_rule(rule_version_id: str, request: Request) -> dict:
+    version = request.app.state.store.disable_rule_version(rule_version_id, _operation_context(request))
+    if not version:
+        raise HTTPException(status_code=404, detail="rule version not found or archived")
+    return _ok(version, "rule version disabled")
+
+
+@rule_versions_router.post("/{rule_version_id}/copy", dependencies=[Depends(require_admin)])
+def copy_rule(rule_version_id: str, request: Request) -> JSONResponse:
+    version = request.app.state.store.copy_rule_version(rule_version_id, _operation_context(request))
+    if not version:
+        raise HTTPException(status_code=404, detail="rule version not found")
+    return JSONResponse(status_code=201, content=_ok(version, "rule version copied"))
+
+
 @rule_packs_router.get("")
 def list_rule_packs(request: Request) -> dict:
     return _ok(request.app.state.store.list_rule_packs())

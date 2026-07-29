@@ -1008,6 +1008,43 @@ class SqlAlchemyStore(DemoStore):
             session.flush()
             return self._rule_version_dict(session, version)
 
+    def disable_rule_version(self, version_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        version_uuid = _uuid(version_id)
+        if not version_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            version = session.get(RuleVersion, version_uuid)
+            if not version or version.status == "archived":
+                return None
+            version.status = "disabled"
+            self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="rule_version", entity_id=version.id, action_code="rule_version.disable", after_snapshot={"status": "disabled"}, trace_id=payload.get("_trace_id"))
+            session.flush()
+            return self._rule_version_dict(session, version)
+
+    def copy_rule_version(self, version_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        version_uuid = _uuid(version_id)
+        if not version_uuid:
+            return None
+        with self.session_factory() as session:
+            source = session.get(RuleVersion, version_uuid)
+            if not source:
+                return None
+            existing = session.scalars(select(RuleVersion.version_no).where(RuleVersion.rule_definition_id == source.rule_definition_id)).all()
+            source_payload = {
+                "version_no": payload.get("version_no") or next_version_no(existing),
+                "parameters": source.parameters,
+                "scope_files": source.scope_files,
+                "priority": source.priority,
+                "stage_code": source.stage_code,
+                "dependency_rule_codes": source.dependency_rule_codes,
+                "task_override_allowed": source.task_override_allowed,
+                "executor_version_id": str(source.executor_version_id),
+                **payload,
+            }
+            source_payload["_operator_user_id"] = payload.get("_operator_user_id")
+            source_payload["_trace_id"] = payload.get("_trace_id")
+        return self.create_rule_version(str(source.rule_definition_id), source_payload)
+
     def list_rule_packs(self) -> list[dict[str, Any]]:
         with self.session_factory() as session:
             packs = session.scalars(select(RulePack)).all()

@@ -1065,6 +1065,31 @@ class DemoStore:
                     return deepcopy(version)
         return None
 
+    def disable_rule_version(self, version_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            for rule in self.rules.values():
+                for version in rule.get("versions", []):
+                    if version.get("id") == version_id and version.get("status") != "archived":
+                        version["status"] = "disabled"
+                        if rule.get("version_no") == version.get("version_no"):
+                            rule["status"] = "disabled"
+                        return deepcopy(version)
+        return None
+
+    def copy_rule_version(self, version_id: str, payload: dict) -> dict | None:
+        version = self.get_rule_version(version_id)
+        if not version:
+            return None
+        copy_payload = {key: version.get(key) for key in (
+            "version_no", "parameters", "scope_files", "priority", "stage_code", "dependency_rule_codes",
+            "task_override_allowed", "executor_version_id",
+        )}
+        copy_payload.update(payload)
+        copy_payload["version_no"] = payload.get("version_no") or next_version_no(
+            [item["version_no"] for item in self.list_rule_versions(version["rule_definition_id"])]
+        )
+        return self.create_rule_version(version["rule_definition_id"], copy_payload)
+
     def list_executors(self) -> list[dict]:
         return [deepcopy(item) for item in self.executors.values()]
 

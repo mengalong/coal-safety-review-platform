@@ -202,6 +202,8 @@
 | `GET` | `/api/v1/rule-versions/{rule_version_id}` | 规则版本详情 |
 | `POST` | `/api/v1/rule-versions/{rule_version_id}/validate` | 执行发布前配置校验 |
 | `POST` | `/api/v1/rule-versions/{rule_version_id}/publish` | 发布版本 |
+| `POST` | `/api/v1/rule-versions/{rule_version_id}/disable` | 停用版本 |
+| `POST` | `/api/v1/rule-versions/{rule_version_id}/copy` | 复制为新草稿版本 |
 | `POST` | `/api/v1/rule-versions/{rule_version_id}/test-runs` | 试运行 |
 | `GET` | `/api/v1/rule-packs` | 规则包列表 |
 | `POST` | `/api/v1/rule-packs` | 创建规则包 |
