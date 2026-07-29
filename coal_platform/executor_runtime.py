@@ -87,3 +87,43 @@ def run_rule_execution(store: PlatformStore, execution_id: str, input_payload: d
             "error_payload": {"code": "EXECUTOR_EXCEPTION", "message": str(exc)},
             "elapsed_ms": round((monotonic() - started) * 1000),
         })
+
+
+def process_queue_job(store: PlatformStore, job_id: str) -> dict[str, Any] | None:
+    job = store.get_queue_job(job_id)
+    if not job:
+        return None
+    if job["status"] not in {"queued", "pending"}:
+        raise ValueError("queue job is not runnable")
+    store.update_queue_job(job_id, {"status": "running"})
+    try:
+        if job["job_type"] == "rule_test_run":
+            payload = job["payload"]
+            version = store.get_rule_version(payload["rule_version_id"])
+            if not version:
+                raise ValueError("rule version not found")
+            rule = next((item for item in store.list_rules() if item["id"] == version["rule_definition_id"]), None)
+            if not rule:
+                raise ValueError("rule definition not found")
+            input_payload = {
+                **(payload.get("input_payload") or {}),
+                "evidence": payload.get("evidence") or [],
+                "standard_evidence": payload.get("standard_evidence") or [],
+            }
+            result = evaluate_builtin({**rule, "executor_code": version.get("executor_code")}, payload.get("parameters") or {}, input_payload)
+            return store.update_queue_job(job_id, {"status": "succeeded", "result": result})
+        if job["job_type"] == "audit":
+            payload = job["payload"]
+            executions = [
+                item for item in (store.list_rule_executions(payload["round_id"]) or [])
+                if item["audit_run_id"] == payload["audit_run_id"] and item["status"] == "pending"
+            ]
+            results = [run_rule_execution(store, item["id"]) for item in executions]
+            exceptions = sum(1 for item in results if item and item.get("status") == "exception")
+            summary = {"total": len(results), "exceptions": exceptions}
+            store.complete_audit_run(payload["audit_run_id"], {"status": "failed" if exceptions else "succeeded", "summary": summary})
+            return store.update_queue_job(job_id, {"status": "failed" if exceptions else "succeeded", "result": summary})
+        raise ValueError(f"unsupported queue job type: {job['job_type']}")
+    except (KeyError, TypeError, ValueError) as exc:
+        store.update_queue_job(job_id, {"status": "failed", "error": {"code": "JOB_EXECUTION_FAILED", "message": str(exc)}})
+        raise

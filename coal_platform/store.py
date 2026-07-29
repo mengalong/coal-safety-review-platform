@@ -1459,6 +1459,11 @@ class DemoStore:
                 "summary": None,
             }
             self.audit_runs[run_id] = run
+            self.queue_jobs[run["job_id"]] = {
+                "id": run["job_id"], "job_code": f"AUDIT-{run_id}", "job_type": "audit",
+                "queue_name": "audit", "payload": {"audit_run_id": run_id, "round_id": round_id},
+                "status": "queued", "retry_count": 0, "created_at": _now(),
+            }
             for round_rule in matching_round.get("rules", []):
                 if not round_rule.get("enabled", True):
                     continue
@@ -1488,6 +1493,43 @@ class DemoStore:
             matching_task["updated_at"] = _now()
             matching_round["status"] = "auditing"
             matching_round["updated_at"] = _now()
+            return deepcopy(run)
+
+    def list_queue_jobs(self) -> list[dict]:
+        return [deepcopy(item) for item in self.queue_jobs.values()]
+
+    def get_queue_job(self, job_id: str) -> dict | None:
+        item = self.queue_jobs.get(job_id)
+        return deepcopy(item) if item else None
+
+    def update_queue_job(self, job_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            item = self.queue_jobs.get(job_id)
+            if not item:
+                return None
+            for key in ("status", "result", "error"):
+                if key in payload:
+                    item[key] = deepcopy(payload[key])
+            if item.get("status") == "running":
+                item["started_at"] = _now()
+            if item.get("status") in {"succeeded", "failed"}:
+                item["finished_at"] = _now()
+            return deepcopy(item)
+
+    def complete_audit_run(self, run_id: str, payload: dict) -> dict | None:
+        with self._lock:
+            run = self.audit_runs.get(run_id)
+            if not run:
+                return None
+            run["status"] = payload.get("status", "succeeded")
+            run["summary"] = deepcopy(payload.get("summary") or {})
+            run["finished_at"] = _now()
+            task = self.tasks.get(run.get("task_id"))
+            if task:
+                task["status"] = "waiting_review"
+                round_item = next((item for item in task.get("rounds", []) if item["id"] == run["round_id"]), None)
+                if round_item:
+                    round_item["status"] = "waiting_review"
             return deepcopy(run)
 
     def local_rerun(self, round_id: str, payload: dict) -> dict | None:

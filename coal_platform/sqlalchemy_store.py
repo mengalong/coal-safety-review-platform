@@ -1081,6 +1081,69 @@ class SqlAlchemyStore(DemoStore):
                 "payload": job.payload, "created_at": _iso(job.created_at),
             }
 
+    @staticmethod
+    def _queue_job_dict(job: QueueJob) -> dict[str, Any]:
+        payload = job.payload or {}
+        return {
+            "id": str(job.id), "job_code": job.job_code, "job_type": job.job_type,
+            "queue_name": job.queue_name,
+            "payload": {key: value for key, value in payload.items() if key not in {"result", "error"}},
+            "result": payload.get("result"), "error": payload.get("error"), "status": job.status,
+            "retry_count": job.retry_count, "scheduled_at": _iso(job.scheduled_at),
+            "started_at": _iso(job.started_at), "finished_at": _iso(job.finished_at),
+            "created_at": _iso(job.created_at), "updated_at": _iso(job.updated_at),
+        }
+
+    def list_queue_jobs(self) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            return [self._queue_job_dict(item) for item in session.scalars(select(QueueJob).order_by(QueueJob.created_at.desc()))]
+
+    def get_queue_job(self, job_id: str) -> dict[str, Any] | None:
+        job_uuid = _uuid(job_id)
+        if not job_uuid:
+            return None
+        with self.session_factory() as session:
+            job = session.get(QueueJob, job_uuid)
+            return self._queue_job_dict(job) if job else None
+
+    def update_queue_job(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        job_uuid = _uuid(job_id)
+        if not job_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            job = session.get(QueueJob, job_uuid)
+            if not job:
+                return None
+            job.status = payload.get("status", job.status)
+            if "result" in payload or "error" in payload:
+                job.payload = {**(job.payload or {}), "result": payload.get("result"), "error": payload.get("error")}
+            if job.status == "running" and not job.started_at:
+                job.started_at = datetime.now(UTC)
+            if job.status in {"succeeded", "failed"}:
+                job.finished_at = datetime.now(UTC)
+            session.flush()
+            return self._queue_job_dict(job)
+
+    def complete_audit_run(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        run_uuid = _uuid(run_id)
+        if not run_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            run = session.get(AuditRun, run_uuid)
+            if not run:
+                return None
+            run.status = payload.get("status", "succeeded")
+            run.summary = payload.get("summary") or {}
+            run.finished_at = datetime.now(UTC)
+            round_item = session.get(AuditRound, run.round_id)
+            task = session.get(AuditTask, round_item.task_id) if round_item else None
+            if round_item:
+                round_item.status = "waiting_review"
+            if task:
+                task.status = "waiting_review"
+            session.flush()
+            return self._audit_run_dict(run)
+
     def list_rule_packs(self) -> list[dict[str, Any]]:
         with self.session_factory() as session:
             packs = session.scalars(select(RulePack)).all()

@@ -298,6 +298,7 @@
 | `GET` | `/api/v1/settings/report-templates` | 报告模板 |
 | `GET` | `/api/v1/settings/system-parameters` | 系统参数 |
 | `GET` | `/api/v1/jobs` | 异步作业 |
+| `POST` | `/api/v1/jobs/{job_id}/run` | 管理员触发待执行作业 |
 | `POST` | `/api/v1/jobs/{job_id}/retry` | 重试作业 |
 | `POST` | `/api/v1/jobs/{job_id}/cancel` | 取消作业 |
 | `GET` | `/api/v1/monitoring` | 队列和 Worker 指标 |

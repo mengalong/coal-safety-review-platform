@@ -100,9 +100,13 @@ def test_start_audit_updates_task_and_round_status() -> None:
         assert started.status_code == 202
         run = started.json()["data"]
         assert run["status"] == "queued"
+        admin_headers = _login(client, login_name="admin")
+        completed = client.post(f"/api/v1/jobs/{run['job_id']}/run", headers=admin_headers)
+        assert completed.status_code == 200
+        assert completed.json()["data"]["status"] == "succeeded"
         detail = client.get(f"/api/v1/tasks/{task['id']}", headers=headers).json()["data"]
-        assert detail["status"] == "auditing"
-        assert detail["rounds"][0]["status"] == "auditing"
+        assert detail["status"] == "waiting_review"
+        assert detail["rounds"][0]["status"] == "waiting_review"
 
 
 def test_admin_can_run_a_rule_execution_and_create_issue() -> None:
@@ -288,6 +292,12 @@ def test_admin_can_queue_rule_test_run() -> None:
         assert job["job_type"] == "rule_test_run"
         assert job["status"] == "queued"
         assert job["payload"]["dry_run"] is True
+        completed = client.post(f"/api/v1/jobs/{job['id']}/run", headers=admin_headers)
+        assert completed.status_code == 200
+        assert completed.json()["data"]["status"] == "succeeded"
+        assert completed.json()["data"]["result"]["outcome"] in {
+            "passed", "failed", "unable_to_determine"
+        }
 
 
 def test_standard_parse_revision_comparison_and_abolish_workflow() -> None:

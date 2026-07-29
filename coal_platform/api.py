@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from coal_platform.auth import access_token_expires_at, create_access_token, require_admin, require_user
-from coal_platform.executor_runtime import run_rule_execution
+from coal_platform.executor_runtime import process_queue_job, run_rule_execution
 from coal_platform.request_context import get_trace_id
 from coal_platform.rule_engine import FIXED_AUDIT_STAGES, RuleConfigurationError
 from coal_platform.schemas import (
@@ -1141,8 +1141,19 @@ def list_audit_stages() -> dict:
 
 
 @jobs_router.get("")
-def list_jobs() -> dict:
-    return _ok([])
+def list_jobs(request: Request) -> dict:
+    return _ok(request.app.state.store.list_queue_jobs())
+
+
+@jobs_router.post("/{job_id}/run")
+def run_job(job_id: str, request: Request) -> dict:
+    try:
+        result = process_queue_job(request.app.state.store, job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not result:
+        raise HTTPException(status_code=404, detail="queue job not found")
+    return _ok(result, "queue job completed")
 
 
 @monitoring_router.get("")
