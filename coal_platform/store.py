@@ -1558,6 +1558,13 @@ class DemoStore:
     def list_queue_jobs(self) -> list[dict]:
         return [deepcopy(item) for item in self.queue_jobs.values()]
 
+    def list_alerts(self) -> list[dict]:
+        alerts = []
+        for job in self.queue_jobs.values():
+            if job.get("status") == "failed":
+                alerts.append({"alert_code": f"JOB-{job['id']}", "severity": "high", "source_type": "queue_job", "source_id": job["id"], "title": "作业执行失败", "detail": (job.get("error") or {}).get("message", "队列作业执行失败"), "status": "new"})
+        return deepcopy(alerts)
+
     def get_queue_job(self, job_id: str) -> dict | None:
         item = self.queue_jobs.get(job_id)
         return deepcopy(item) if item else None

@@ -309,6 +309,7 @@
 | `POST` | `/api/v1/jobs/{job_id}/retry` | 失败作业重新入队 |
 | `POST` | `/api/v1/jobs/{job_id}/cancel` | 取消作业 |
 | `GET` | `/api/v1/monitoring` | 队列和 Worker 指标 |
+| `GET` | `/api/v1/monitoring/alerts` | 系统告警列表 |
 | `GET` | `/api/v1/logs` | 操作日志 |
 
 ## 12. 重要状态机

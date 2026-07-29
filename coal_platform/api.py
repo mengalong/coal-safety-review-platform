@@ -1271,15 +1271,16 @@ def retry_job(job_id: str, request: Request) -> dict:
 
 
 @monitoring_router.get("")
-def monitoring() -> dict:
-    return _ok(
-        {
-            "queue_waiting": 4,
-            "worker_online": 2,
-            "executor_failure_rate": 0.02,
-            "model_failure_rate": 0.01,
-        }
-    )
+def monitoring(request: Request) -> dict:
+    jobs = request.app.state.store.list_queue_jobs()
+    total = len(jobs)
+    failed = sum(item.get("status") == "failed" for item in jobs)
+    return _ok({"queue_waiting": sum(item.get("status") in {"queued", "pending"} for item in jobs), "queue_running": sum(item.get("status") == "running" for item in jobs), "queue_failed": failed, "worker_online": 1 if get_settings().dispatch_jobs else 0, "job_failure_rate": round(failed / total, 4) if total else 0.0, "alerts_new": len(request.app.state.store.list_alerts())})
+
+
+@monitoring_router.get("/alerts")
+def list_alerts(request: Request) -> dict:
+    return _ok(request.app.state.store.list_alerts())
 
 
 @logs_router.get("")

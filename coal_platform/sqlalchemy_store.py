@@ -40,6 +40,7 @@ from coal_platform.models import (
     StandardClause,
     StandardParseRevision,
     StandardVersion,
+    SystemAlert,
     SystemParameter,
     TaskFile,
     User,
@@ -1100,6 +1101,10 @@ class SqlAlchemyStore(DemoStore):
     def list_queue_jobs(self) -> list[dict[str, Any]]:
         with self.session_factory() as session:
             return [self._queue_job_dict(item) for item in session.scalars(select(QueueJob).order_by(QueueJob.created_at.desc()))]
+
+    def list_alerts(self) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            return [{"id": str(item.id), "alert_code": item.alert_code, "severity": item.severity, "source_type": item.source_type, "source_id": str(item.source_id) if item.source_id else None, "title": item.title, "detail": item.detail, "status": item.status, "created_at": _iso(item.created_at), "updated_at": _iso(item.updated_at)} for item in session.scalars(select(SystemAlert).order_by(SystemAlert.created_at.desc()))]
 
     @staticmethod
     def _model_config_dict(session: Session, item: ModelConfig) -> dict[str, Any]:

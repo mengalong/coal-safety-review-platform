@@ -196,6 +196,17 @@ def test_reviewer_can_create_manual_issue_with_evidence() -> None:
         assert issue["evidence"][0]["page_no"] == 3
 
 
+def test_admin_monitoring_reports_real_queue_counts_and_alerts() -> None:
+    with _client() as client:
+        headers = _login(client, login_name="admin")
+        monitoring = client.get("/api/v1/monitoring", headers=headers)
+        assert monitoring.status_code == 200
+        assert {"queue_waiting", "queue_running", "queue_failed", "alerts_new"} <= monitoring.json()["data"].keys()
+        alerts = client.get("/api/v1/monitoring/alerts", headers=headers)
+        assert alerts.status_code == 200
+        assert isinstance(alerts.json()["data"], list)
+
+
 def test_reviewer_cannot_access_admin_user_list() -> None:
     with _client() as client:
         reviewer_headers = _login(client)
