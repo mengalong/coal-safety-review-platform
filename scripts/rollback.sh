@@ -9,6 +9,33 @@ fi
 PREVIOUS_ENV=$2
 BACKUP=$3
 CURRENT_ENV=${4:-.env.production}
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+STARTED_AT=$(date +%s)
+RECORD_DIR=${COAL_RELEASE_RECORD_DIR:-$(dirname "$BACKUP")/release-records}
+RECORD="$RECORD_DIR/$STAMP-rollback.env"
+UAT_RESULT="$RECORD_DIR/$STAMP-rollback-uat.json"
+STATUS=failed
+
+mkdir -p "$RECORD_DIR"
+
+write_record() {
+  EXIT_CODE=$?
+  FINISHED_AT=$(date +%s)
+  trap - 0 INT TERM
+  {
+    echo "status=$STATUS"
+    echo "rolled_back_at=$STAMP"
+    echo "elapsed_seconds=$((FINISHED_AT - STARTED_AT))"
+    echo "previous_env=$PREVIOUS_ENV"
+    echo "current_env=$CURRENT_ENV"
+    echo "backup=$BACKUP"
+    echo "uat_mode=${COAL_UAT_MODE:-basic}"
+    echo "uat_result=$UAT_RESULT"
+  } > "$RECORD"
+  chmod 600 "$RECORD"
+  exit "$EXIT_CODE"
+}
+trap write_record 0 INT TERM
 
 current_compose() {
   docker compose --env-file "$CURRENT_ENV" -f compose.production.yaml "$@"
@@ -24,4 +51,6 @@ previous_compose pull api worker web
 scripts/restore.sh --confirm "$BACKUP" "$PREVIOUS_ENV"
 previous_compose up -d --no-build api worker web
 scripts/production-smoke-test.sh "$PREVIOUS_ENV"
-echo "Rollback completed with $PREVIOUS_ENV and $BACKUP"
+scripts/release-uat.sh "$PREVIOUS_ENV" "$UAT_RESULT"
+STATUS=passed
+echo "Rollback completed with $PREVIOUS_ENV and $BACKUP; record: $RECORD"

@@ -9,6 +9,33 @@ fi
 ENV_FILE=${2:-.env.production}
 BACKUP_ROOT=${3:-./backups}
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+STARTED_AT=$(date +%s)
+RECORD_DIR="$BACKUP_ROOT/release-records"
+RECORD="$RECORD_DIR/$STAMP.env"
+UAT_RESULT="$RECORD_DIR/$STAMP-uat.json"
+STATUS=failed
+BACKUP_ARTIFACT=
+
+mkdir -p "$RECORD_DIR"
+
+write_record() {
+  EXIT_CODE=$?
+  FINISHED_AT=$(date +%s)
+  trap - 0 INT TERM
+  {
+    echo "status=$STATUS"
+    echo "released_at=$STAMP"
+    echo "elapsed_seconds=$((FINISHED_AT - STARTED_AT))"
+    echo "api_image=${API_IMAGE:-unknown}"
+    echo "web_image=${WEB_IMAGE:-unknown}"
+    echo "backup=${BACKUP_ARTIFACT:-pending}"
+    echo "uat_mode=${COAL_UAT_MODE:-basic}"
+    echo "uat_result=$UAT_RESULT"
+  } > "$RECORD"
+  chmod 600 "$RECORD"
+  exit "$EXIT_CODE"
+}
+trap write_record 0 INT TERM
 
 compose() {
   docker compose --env-file "$ENV_FILE" -f compose.production.yaml "$@"
@@ -32,13 +59,6 @@ BACKUP_ARTIFACT="$BACKUP_ROOT/$STAMP"
 if [ ! -d "$BACKUP_ARTIFACT" ]; then
   BACKUP_ARTIFACT="$BACKUP_ARTIFACT.tar.gz.age"
 fi
-
-mkdir -p "$BACKUP_ROOT/release-records"
-{
-  echo "released_at=$STAMP"
-  echo "api_image=$API_IMAGE"
-  echo "web_image=$WEB_IMAGE"
-  echo "backup=$BACKUP_ARTIFACT"
-} > "$BACKUP_ROOT/release-records/$STAMP.env"
-chmod 600 "$BACKUP_ROOT/release-records/$STAMP.env"
-echo "Release completed; record: $BACKUP_ROOT/release-records/$STAMP.env"
+scripts/release-uat.sh "$ENV_FILE" "$UAT_RESULT"
+STATUS=passed
+echo "Release completed; record: $RECORD"
