@@ -102,6 +102,12 @@ class RuleVersionCreateRequest(BaseModel):
     executor_version_id: str | None = None
 
 
+class RuleTestRunRequest(BaseModel):
+    input_payload: dict[str, Any] = Field(default_factory=dict)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    standard_evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class RulePackCreateRequest(BaseModel):
     pack_code: str
     pack_name: str

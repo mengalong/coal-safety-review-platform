@@ -253,6 +253,23 @@ def test_only_admin_can_create_and_publish_standard_versions() -> None:
         assert missing_standard.status_code == 404
 
 
+def test_admin_can_queue_rule_test_run() -> None:
+    with _client() as client:
+        admin_headers = _login(client, login_name="admin")
+        rules = client.get("/api/v1/rules", headers=admin_headers).json()["data"]
+        version = next(version for rule in rules for version in rule.get("versions", []) if version["status"] == "published")
+        response = client.post(
+            f"/api/v1/rule-versions/{version['id']}/test-runs",
+            headers=admin_headers,
+            json={"input_payload": {"product_model": "KBZ-500/1140"}},
+        )
+        assert response.status_code == 202
+        job = response.json()["data"]
+        assert job["job_type"] == "rule_test_run"
+        assert job["status"] == "queued"
+        assert job["payload"]["dry_run"] is True
+
+
 def test_standard_parse_revision_comparison_and_abolish_workflow() -> None:
     with _client() as client:
         admin_headers = _login(client, login_name="admin")

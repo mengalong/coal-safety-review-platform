@@ -4,7 +4,7 @@ import json
 from datetime import UTC, date, datetime
 from hashlib import sha256
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -1044,6 +1044,42 @@ class SqlAlchemyStore(DemoStore):
             source_payload["_operator_user_id"] = payload.get("_operator_user_id")
             source_payload["_trace_id"] = payload.get("_trace_id")
         return self.create_rule_version(str(source.rule_definition_id), source_payload)
+
+    def create_rule_test_run(self, version_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        version_uuid = _uuid(version_id)
+        if not version_uuid:
+            return None
+        with self.session_factory() as session, session.begin():
+            version = session.get(RuleVersion, version_uuid)
+            if not version:
+                return None
+            if errors := self._rule_validation_errors(session, version):
+                raise RuleConfigurationError(errors)
+            definition = session.get(RuleDefinition, version.rule_definition_id)
+            job = QueueJob(
+                job_code=f"RULE-TEST-{uuid4().hex}",
+                job_type="rule_test_run",
+                queue_name="rule_test",
+                status="queued",
+                payload={
+                    "rule_version_id": str(version.id),
+                    "rule_code": definition.rule_code if definition else None,
+                    "executor_version_id": str(version.executor_version_id),
+                    "parameters": version.parameters or {},
+                    "input_payload": payload.get("input_payload") or {},
+                    "evidence": payload.get("evidence") or [],
+                    "standard_evidence": payload.get("standard_evidence") or [],
+                    "dry_run": True,
+                },
+            )
+            session.add(job)
+            session.flush()
+            self._log(session, operator_user_id=payload.get("_operator_user_id"), entity_type="queue_job", entity_id=job.id, action_code="rule_version.test_run.create", after_snapshot={"job_code": job.job_code, "rule_version_id": str(version.id)}, trace_id=payload.get("_trace_id"))
+            return {
+                "id": str(job.id), "job_code": job.job_code, "job_type": job.job_type,
+                "queue_name": job.queue_name, "status": job.status, "retry_count": job.retry_count,
+                "payload": job.payload, "created_at": _iso(job.created_at),
+            }
 
     def list_rule_packs(self) -> list[dict[str, Any]]:
         with self.session_factory() as session:

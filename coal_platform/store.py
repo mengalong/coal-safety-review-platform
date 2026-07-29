@@ -102,6 +102,7 @@ class DemoStore:
         self.tasks: dict[str, dict] = {}
         self.audit_runs: dict[str, dict] = {}
         self.rule_executions: dict[str, dict] = {}
+        self.queue_jobs: dict[str, dict] = {}
         self.impact_analyses: dict[str, dict] = {}
         self.dynamic_items: dict[str, dict] = {}
         self.standards: dict[str, dict] = {}
@@ -1089,6 +1090,38 @@ class DemoStore:
             [item["version_no"] for item in self.list_rule_versions(version["rule_definition_id"])]
         )
         return self.create_rule_version(version["rule_definition_id"], copy_payload)
+
+    def create_rule_test_run(self, version_id: str, payload: dict) -> dict | None:
+        version = self.get_rule_version(version_id)
+        if not version:
+            return None
+        source = next(
+            item for item in self.rules.values() if item["id"] == version["rule_definition_id"]
+        )
+        if errors := self._rule_validation_errors(version):
+            raise RuleConfigurationError(errors)
+        job_id = str(uuid4())
+        job = {
+            "id": job_id,
+            "job_code": f"RULE-TEST-{job_id}",
+            "job_type": "rule_test_run",
+            "queue_name": "rule_test",
+            "status": "queued",
+            "retry_count": 0,
+            "payload": {
+                "rule_version_id": version_id,
+                "rule_code": source["rule_code"],
+                "executor_version_id": version["executor_version_id"],
+                "parameters": deepcopy(version.get("parameters") or {}),
+                "input_payload": deepcopy(payload.get("input_payload") or {}),
+                "evidence": deepcopy(payload.get("evidence") or []),
+                "standard_evidence": deepcopy(payload.get("standard_evidence") or []),
+                "dry_run": True,
+            },
+            "created_at": _now(),
+        }
+        self.queue_jobs[job_id] = job
+        return deepcopy(job)
 
     def list_executors(self) -> list[dict]:
         return [deepcopy(item) for item in self.executors.values()]

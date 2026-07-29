@@ -26,6 +26,7 @@ from coal_platform.schemas import (
     RuleCreateRequest,
     RulePackCreateRequest,
     RulePackUpdateRequest,
+    RuleTestRunRequest,
     RuleVersionCreateRequest,
     StandardCreateRequest,
     StandardParseRevisionCreateRequest,
@@ -840,6 +841,21 @@ def copy_rule(rule_version_id: str, request: Request) -> JSONResponse:
     if not version:
         raise HTTPException(status_code=404, detail="rule version not found")
     return JSONResponse(status_code=201, content=_ok(version, "rule version copied"))
+
+
+@rule_versions_router.post("/{rule_version_id}/test-runs", dependencies=[Depends(require_admin)])
+def create_rule_test_run(
+    rule_version_id: str, payload: RuleTestRunRequest, request: Request
+) -> JSONResponse:
+    data = payload.model_dump()
+    data.update(_operation_context(request))
+    try:
+        job = request.app.state.store.create_rule_test_run(rule_version_id, data)
+    except RuleConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors) from exc
+    if not job:
+        raise HTTPException(status_code=404, detail="rule version not found")
+    return JSONResponse(status_code=202, content=_ok(job, "rule test run queued"))
 
 
 @rule_packs_router.get("")
