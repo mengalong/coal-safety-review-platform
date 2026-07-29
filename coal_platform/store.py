@@ -1544,6 +1544,28 @@ class DemoStore:
                         for evidence_type, entries in (("customer", customer_evidence), ("standard", standard_evidence))
                         for entry in entries
                     )
+            run_executions = [
+                execution for execution in self.rule_executions.values()
+                if execution["audit_run_id"] == item["audit_run_id"]
+            ]
+            terminal = {"succeeded", "failed", "unable_to_determine", "exception", "canceled", "expired"}
+            if run_executions and all(execution["status"] in terminal for execution in run_executions):
+                run = self.audit_runs.get(item["audit_run_id"])
+                if run and run["status"] in {"queued", "running"}:
+                    run["status"] = "completed"
+                    run["finished_at"] = _now()
+                    run["summary"] = {
+                        "total": len(run_executions),
+                        "status_counts": {
+                            status: sum(execution["status"] == status for execution in run_executions)
+                            for status in sorted({execution["status"] for execution in run_executions})
+                        },
+                    }
+                    for task in self.tasks.values():
+                        for round_item in task.get("rounds", []):
+                            if round_item.get("id") == item["round_id"]:
+                                task["status"] = "awaiting_review"
+                                round_item["status"] = "awaiting_review"
             return deepcopy(item)
 
     def retry_rule_execution(self, execution_id: str, payload: dict) -> dict | None:

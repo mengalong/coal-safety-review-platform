@@ -143,6 +143,7 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     assert updated and updated["status"] == "failed" and updated["attempt_count"] == 1
     retried = store.retry_rule_execution(executions[0]["id"], {})
     assert retried and retried["status"] == "pending" and retried["retry_count"] == 1
+    store.record_execution_attempt(executions[0]["id"], {"status": "succeeded", "output_payload": {"result": "pass"}})
     store.record_execution_attempt(
         executions[1]["id"],
         {"status": "failed", "output_payload": {"issue": {
@@ -154,6 +155,8 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
             "standard_evidence": {"excerpt_text": "型号应保持一致"},
         }}},
     )
+    runs = store.list_audit_runs(task["current_round_id"])
+    assert runs and runs[-1]["status"] == "completed"
     issues = store.list_issues(task["current_round_id"])
     assert len(issues) == 1 and issues[0]["issue_code"] == "MODEL-INCONSISTENT"
     assert issues[0]["system_conclusion"] == "conflict_requires_review"

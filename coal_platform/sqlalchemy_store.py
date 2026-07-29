@@ -2355,6 +2355,26 @@ class SqlAlchemyStore(DemoStore):
                                 )
                             )
             session.flush()
+            run_executions = session.scalars(
+                select(RuleExecution).where(RuleExecution.audit_run_id == execution.audit_run_id)
+            ).all()
+            terminal = {"succeeded", "failed", "unable_to_determine", "exception", "canceled", "expired"}
+            if run_executions and all(item.status in terminal for item in run_executions):
+                audit_run = session.get(AuditRun, execution.audit_run_id)
+                if audit_run and audit_run.status in {"queued", "running"}:
+                    status_counts = {
+                        status: sum(item.status == status for item in run_executions)
+                        for status in sorted({item.status for item in run_executions})
+                    }
+                    audit_run.status = "completed"
+                    audit_run.finished_at = datetime.now(UTC)
+                    audit_run.summary = {"total": len(run_executions), "status_counts": status_counts}
+                    round_item = session.get(AuditRound, execution.round_id)
+                    task = session.get(AuditTask, round_item.task_id) if round_item else None
+                    if round_item:
+                        round_item.status = "awaiting_review"
+                    if task:
+                        task.status = "awaiting_review"
             return self._rule_execution_dict(session, execution)
 
     def retry_rule_execution(self, execution_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
