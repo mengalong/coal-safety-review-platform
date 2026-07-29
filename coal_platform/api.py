@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from coal_platform.auth import access_token_expires_at, create_access_token, require_admin, require_user
+from coal_platform.config import get_settings
 from coal_platform.executor_runtime import process_queue_job, run_rule_execution
 from coal_platform.request_context import get_trace_id
 from coal_platform.rule_engine import FIXED_AUDIT_STAGES, RuleConfigurationError
@@ -90,6 +91,20 @@ def _ensure_issue_access(request: Request, issue: dict) -> None:
 
 def _operation_context(request: Request) -> dict[str, str]:
     return {"_operator_user_id": _current_user(request)["id"], "_trace_id": get_trace_id() or ""}
+
+
+def _dispatch_job_if_enabled(request: Request, job_id: str | None) -> dict[str, str] | None:
+    if not job_id or not get_settings().dispatch_jobs:
+        return None
+    try:
+        from coal_platform.worker import dispatch_queue_job
+
+        return {"celery_task_id": dispatch_queue_job(job_id)}
+    except Exception as exc:  # noqa: BLE001 - dispatch failure must remain visible on the queue job
+        request.app.state.store.update_queue_job(
+            job_id, {"status": "failed", "error": {"code": "JOB_DISPATCH_FAILED", "message": str(exc)}}
+        )
+        return {"dispatch_error": str(exc)}
 
 
 @health_router.get("/healthz")
@@ -492,6 +507,9 @@ def start_audit(round_id: str, request: Request) -> JSONResponse:
     run = request.app.state.store.start_audit(round_id, _operation_context(request))
     if not run:
         raise HTTPException(status_code=404, detail="round not found")
+    dispatch = _dispatch_job_if_enabled(request, run.get("job_id"))
+    if dispatch:
+        run["dispatch"] = dispatch
     return JSONResponse(status_code=202, content=_ok(run, "audit queued"))
 
 
@@ -864,6 +882,9 @@ def create_rule_test_run(
         raise HTTPException(status_code=422, detail=exc.errors) from exc
     if not job:
         raise HTTPException(status_code=404, detail="rule version not found")
+    dispatch = _dispatch_job_if_enabled(request, job.get("id"))
+    if dispatch:
+        job["dispatch"] = dispatch
     return JSONResponse(status_code=202, content=_ok(job, "rule test run queued"))
 
 

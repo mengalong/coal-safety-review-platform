@@ -12,6 +12,10 @@ celery_app = Celery("coal_platform", broker=settings.redis_url, backend=settings
 celery_app.conf.update(task_default_queue="coal", task_track_started=True, task_serializer="json", accept_content=["json"])
 
 
+def dispatch_queue_job(job_id: str) -> str:
+    return str(consume_queue_job.delay(job_id).id)
+
+
 @celery_app.task(bind=True, max_retries=3, name="coal_platform.consume_queue_job")
 def consume_queue_job(self, job_id: str) -> dict:
     store = SqlAlchemyStore(SessionLocal)

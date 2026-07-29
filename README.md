@@ -40,7 +40,7 @@ python -m http.server 65513 --directory prototype
 docker compose up --build
 ```
 
-该命令会启动 API、Celery Worker、PostgreSQL/pgvector、Redis 和 MinIO。Worker 从 Redis 消费审核和试运行作业，失败作业最多自动重试 3 次。MinIO 控制台地址为
+该命令会启动 API、Celery Worker、PostgreSQL/pgvector、Redis 和 MinIO。API 会将审核和试运行作业自动派发到 Redis，Worker 从 Redis 消费作业，失败作业最多自动重试 3 次。MinIO 控制台地址为
 `http://127.0.0.1:9001`。
 
 ## 验证
