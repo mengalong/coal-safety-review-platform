@@ -52,6 +52,8 @@ services:
       COAL_MINIO_SECRET_KEY: coal-local-secret
       COAL_MINIO_BUCKET: coal-review
       COAL_STORAGE_BACKEND: minio
+      COAL_OCR_BACKEND: tesseract
+      COAL_OCR_LANGUAGES: chi_sim+eng
       COAL_CORS_ORIGINS: '["http://127.0.0.1:65513","http://localhost:65513"]'
     ports:
       - "8000:8000"
@@ -76,6 +78,8 @@ services:
       COAL_MINIO_SECRET_KEY: coal-local-secret
       COAL_MINIO_BUCKET: coal-review
       COAL_STORAGE_BACKEND: minio
+      COAL_OCR_BACKEND: tesseract
+      COAL_OCR_LANGUAGES: chi_sim+eng
     depends_on:
       postgres:
         condition: service_healthy

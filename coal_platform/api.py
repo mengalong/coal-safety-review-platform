@@ -1309,7 +1309,13 @@ def list_jobs(request: Request) -> dict:
 @jobs_router.post("/{job_id}/run")
 def run_job(job_id: str, request: Request) -> dict:
     try:
-        result = process_queue_job(request.app.state.store, job_id, request.app.state.object_storage)
+        result = process_queue_job(
+            request.app.state.store,
+            job_id,
+            request.app.state.object_storage,
+            request.app.state.ocr_backend,
+            request.app.state.ocr_dpi,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not result:
@@ -1341,7 +1347,8 @@ def monitoring(request: Request) -> dict:
     jobs = request.app.state.store.list_queue_jobs()
     total = len(jobs)
     failed = sum(item.get("status") == "failed" for item in jobs)
-    return _ok({"queue_waiting": sum(item.get("status") in {"queued", "pending"} for item in jobs), "queue_running": sum(item.get("status") == "running" for item in jobs), "queue_failed": failed, "worker_online": 1 if get_settings().dispatch_jobs else 0, "job_failure_rate": round(failed / total, 4) if total else 0.0, "alerts_new": len(request.app.state.store.list_alerts())})
+    ocr_backend = request.app.state.ocr_backend
+    return _ok({"queue_waiting": sum(item.get("status") in {"queued", "pending"} for item in jobs), "queue_running": sum(item.get("status") == "running" for item in jobs), "queue_failed": failed, "worker_online": 1 if get_settings().dispatch_jobs else 0, "job_failure_rate": round(failed / total, 4) if total else 0.0, "alerts_new": len(request.app.state.store.list_alerts()), "ocr_engine": ocr_backend.engine_name if ocr_backend else "disabled"})
 
 
 @monitoring_router.get("/alerts")

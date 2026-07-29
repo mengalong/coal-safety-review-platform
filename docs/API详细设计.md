@@ -142,9 +142,11 @@
 1. 上传或替换文件后自动创建 `document_parse` 作业；启用 Celery 派发时由 Worker 从对象存储读取原文件。
 2. 文件状态依次为 `uploaded -> parse_pending -> parsing -> parsed / parse_failed`；失败后通过重试接口创建新作业。
 3. PDF 文本按页和行保存，Word 保存段落和表格行，Excel 保存工作表行及单元格范围；证据块统一返回 `page_no`、`block_type`、`content_text`、`bbox`、`confidence` 和 `source_ref`。
-4. PDF 无文本页写入 `parse_summary.empty_text_pages` 并设置 `needs_ocr=true`，不得将空页当作已取得有效证据。
+4. PDF 无文本页写入 `parse_summary.empty_text_pages`；启用 OCR 后仅渲染这些页面，并记录 `ocr_engine`、`ocr_page_count`、`ocr_block_count` 和 `unresolved_ocr_pages`。仍未识别的页面使 `needs_ocr=true`，不得当作有效证据。
 5. 文件替换会取消尚未执行的旧解析作业并清除旧块；运行中的旧作业通过存储键和文件版本快照隔离，不得覆盖新版本结果。
 6. 上传入口直接拒绝超过 50 MiB 的单文件；DOCX/XLSX 解压后最大 200 MiB、归档条目最大 10000 个；PDF/工作表最大 1000 页，解析块最大 10000 个，单块文本最大 100000 字符。
+7. OCR 块使用 `ocr_line` 类型，`confidence` 为 `0..1`；`bbox` 使用 PDF 点坐标，包含 `x`、`y`、`width`、`height`、`page_width`、`page_height` 和 `unit=pt`。
+8. OCR 单页渲染最多 4000 万像素，DPI 允许 `72..600`，单页识别超时允许 `1..600` 秒；超限或 OCR 异常进入 `parse_failed` 并保留错误信息。
 
 ## 5. 轮次与标准
 

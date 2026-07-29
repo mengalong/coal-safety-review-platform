@@ -10,6 +10,7 @@ from coal_platform import __version__
 from coal_platform.api import register_routers
 from coal_platform.config import get_settings
 from coal_platform.database import SessionLocal
+from coal_platform.ocr import OCRBackend, build_ocr_backend
 from coal_platform.request_context import get_trace_id, trace_id_context
 from coal_platform.sqlalchemy_store import SqlAlchemyStore
 from coal_platform.storage import ObjectStorage, build_object_storage
@@ -34,12 +35,14 @@ def _error_response(
 def create_app(
     store: PlatformStore | None = None,
     object_storage: ObjectStorage | None = None,
+    ocr_backend: OCRBackend | None = None,
 ) -> FastAPI:
     settings = get_settings()
     active_store = store
     if active_store is None:
         active_store = SqlAlchemyStore(SessionLocal) if settings.store_backend == "database" else DemoStore.seed()
     active_storage = object_storage or build_object_storage(settings)
+    active_ocr = ocr_backend or build_ocr_backend(settings)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -94,6 +97,8 @@ def create_app(
 
     app.state.store = active_store
     app.state.object_storage = active_storage
+    app.state.ocr_backend = active_ocr
+    app.state.ocr_dpi = settings.ocr_dpi
     register_routers(app, prefix=settings.api_v1_prefix)
     return app
 

@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,11 @@ class Settings(BaseSettings):
     minio_secure: bool = False
     storage_backend: Literal["local", "minio"] = "local"
     local_storage_path: str = "./data/uploads"
+    ocr_backend: Literal["disabled", "tesseract"] = "disabled"
+    ocr_languages: str = Field(default="chi_sim+eng", min_length=1, max_length=64)
+    ocr_dpi: int = Field(default=200, ge=72, le=600)
+    ocr_timeout_seconds: int = Field(default=120, ge=1, le=600)
+    ocr_minimum_confidence: float = Field(default=0.35, ge=0, le=1)
     secret_key: str = "development-only-change-this-secret-key"
     access_token_expire_minutes: int = 480
     jwt_algorithm: str = "HS256"

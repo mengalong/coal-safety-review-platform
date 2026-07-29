@@ -5,10 +5,13 @@ from pathlib import Path
 from typing import Any
 from zipfile import BadZipFile, ZipFile
 
+import pypdfium2 as pdfium
 from docx import Document
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from pypdf import PdfReader
+
+from coal_platform.ocr import OCRBackend
 
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_EXPANDED_BYTES = 200 * 1024 * 1024
@@ -16,6 +19,7 @@ MAX_ARCHIVE_ENTRIES = 10000
 MAX_PAGES = 1000
 MAX_BLOCKS = 10000
 MAX_BLOCK_CHARS = 100000
+MAX_OCR_PAGE_PIXELS = 40_000_000
 
 
 class DocumentParseError(ValueError):
@@ -61,7 +65,78 @@ def _ensure_archive_limits(content: bytes) -> None:
         raise DocumentParseError("invalid OOXML document archive") from exc
 
 
-def _parse_pdf(content: bytes) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _ocr_pdf_pages(
+    content: bytes,
+    page_numbers: list[int],
+    ocr_backend: OCRBackend,
+    dpi: int,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    blocks: list[dict[str, Any]] = []
+    unresolved_pages: list[int] = []
+    try:
+        document = pdfium.PdfDocument(content)
+    except Exception as exc:
+        raise DocumentParseError(f"failed to render PDF for OCR: {exc}") from exc
+    try:
+        for page_no in page_numbers:
+            page = document.get_page(page_no - 1)
+            bitmap = None
+            image = None
+            try:
+                page_width, page_height = page.get_size()
+                estimated_pixels = page_width * dpi / 72 * page_height * dpi / 72
+                if estimated_pixels > MAX_OCR_PAGE_PIXELS:
+                    raise DocumentParseError(f"PDF page {page_no} exceeds {MAX_OCR_PAGE_PIXELS} OCR pixel limit")
+                bitmap = page.render(scale=dpi / 72)
+                image = bitmap.to_pil()
+                image_output = BytesIO()
+                image.save(image_output, format="PNG")
+                lines = ocr_backend.recognize(image_output.getvalue())
+                if not lines:
+                    unresolved_pages.append(page_no)
+                    continue
+                scale_x = page_width / image.width
+                scale_y = page_height / image.height
+                for line_no, line in enumerate(lines, start=1):
+                    bbox = {
+                        "x": round(line.left * scale_x, 3),
+                        "y": round(line.top * scale_y, 3),
+                        "width": round(line.width * scale_x, 3),
+                        "height": round(line.height * scale_y, 3),
+                        "page_width": round(page_width, 3),
+                        "page_height": round(page_height, 3),
+                        "unit": "pt",
+                    }
+                    blocks.append(
+                        _block(
+                            page_no,
+                            "ocr_line",
+                            line.text,
+                            f"ocr:{ocr_backend.engine_name}:page:{page_no}:line:{line_no}",
+                            confidence=line.confidence,
+                            bbox=bbox,
+                        )
+                    )
+                    if len(blocks) > MAX_BLOCKS:
+                        raise DocumentParseError(f"OCR result exceeds {MAX_BLOCKS} block parse limit")
+            finally:
+                if image:
+                    image.close()
+                if bitmap:
+                    bitmap.close()
+                page.close()
+    except Exception as exc:
+        raise DocumentParseError(f"PDF OCR failed: {exc}") from exc
+    finally:
+        document.close()
+    return blocks, unresolved_pages
+
+
+def _parse_pdf(
+    content: bytes,
+    ocr_backend: OCRBackend | None = None,
+    ocr_dpi: int = 200,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     try:
         reader = PdfReader(BytesIO(content))
     except Exception as exc:
@@ -88,11 +163,20 @@ def _parse_pdf(content: bytes) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             empty_pages.append(page_no)
         for index, paragraph in enumerate(paragraphs, start=1):
             blocks.append(_block(page_no, "paragraph", paragraph, f"pdf:page:{page_no}:line:{index}"))
+    ocr_blocks: list[dict[str, Any]] = []
+    unresolved_pages = empty_pages
+    if empty_pages and ocr_backend:
+        ocr_blocks, unresolved_pages = _ocr_pdf_pages(content, empty_pages, ocr_backend, ocr_dpi)
+        blocks.extend(ocr_blocks)
     return blocks, {
         "parser": "pypdf",
         "page_count": len(reader.pages),
         "empty_text_pages": empty_pages,
-        "needs_ocr": bool(empty_pages),
+        "ocr_engine": ocr_backend.engine_name if ocr_backend and empty_pages else None,
+        "ocr_page_count": len(empty_pages) - len(unresolved_pages),
+        "ocr_block_count": len(ocr_blocks),
+        "unresolved_ocr_pages": unresolved_pages,
+        "needs_ocr": bool(unresolved_pages),
     }
 
 
@@ -173,13 +257,19 @@ def _parse_text(content: bytes) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     return blocks, {"parser": "plain-text", "logical_page_count": 1, "needs_ocr": False}
 
 
-def parse_document(content: bytes, file_name: str, file_type: str | None = None) -> dict[str, Any]:
+def parse_document(
+    content: bytes,
+    file_name: str,
+    file_type: str | None = None,
+    ocr_backend: OCRBackend | None = None,
+    ocr_dpi: int = 200,
+) -> dict[str, Any]:
     if len(content) > MAX_FILE_BYTES:
         raise DocumentParseError(f"file exceeds {MAX_FILE_BYTES} byte parse limit")
     suffix = Path(file_name).suffix.lower()
     kind = suffix.lstrip(".") or (file_type or "").lower()
     if kind == "pdf":
-        blocks, summary = _parse_pdf(content)
+        blocks, summary = _parse_pdf(content, ocr_backend, ocr_dpi)
     elif kind == "docx":
         blocks, summary = _parse_docx(content)
     elif kind in {"xlsx", "xlsm"}:

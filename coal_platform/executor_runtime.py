@@ -6,6 +6,7 @@ from time import monotonic
 from typing import Any
 
 from coal_platform.document_parser import parse_document
+from coal_platform.ocr import OCRBackend
 from coal_platform.storage import ObjectStorage
 from coal_platform.store_protocol import PlatformStore
 
@@ -95,6 +96,8 @@ def process_queue_job(
     store: PlatformStore,
     job_id: str,
     object_storage: ObjectStorage | None = None,
+    ocr_backend: OCRBackend | None = None,
+    ocr_dpi: int = 200,
 ) -> dict[str, Any] | None:
     job = store.get_queue_job(job_id)
     if not job:
@@ -118,7 +121,13 @@ def process_queue_job(
             content = object_storage.get(payload["storage_key"])
             if content is None:
                 raise ValueError("task file object is missing")
-            parsed = parse_document(content, payload["file_name"], payload.get("file_type"))
+            parsed = parse_document(
+                content,
+                payload["file_name"],
+                payload.get("file_type"),
+                ocr_backend,
+                ocr_dpi,
+            )
             completed = store.complete_task_file_parse(file_id, parsed["blocks"], parsed["summary"], context)
             if not completed:
                 raise ValueError("task file parse result could not be saved")

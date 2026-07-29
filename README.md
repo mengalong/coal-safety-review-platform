@@ -25,6 +25,8 @@ API 文档：`http://127.0.0.1:8000/api/docs`
 演示密码只用于本地开发。业务接口需要先调用 `POST /api/v1/auth/login` 获取 Bearer Token。
 默认运行时使用 SQLite 和 `./data/uploads` 本地对象目录，任务、轮次和文件在 API
 重启后仍然保留。设置 `COAL_STORE_BACKEND=demo` 可临时切回纯内存演示数据。
+本机默认关闭 OCR；安装 Tesseract 及简体中文语言包后，设置
+`COAL_OCR_BACKEND=tesseract` 可启用扫描 PDF 的 CPU OCR。
 
 原型通过真实登录、当前用户、任务列表和退出接口连接本地 API。先启动 API，再启动原型静态服务：
 
@@ -40,7 +42,7 @@ python -m http.server 65513 --directory prototype
 docker compose up --build
 ```
 
-该命令会启动 API、Celery Worker、PostgreSQL/pgvector、Redis 和 MinIO。API 会将审核和试运行作业自动派发到 Redis，Worker 从 Redis 消费作业，失败作业最多自动重试 3 次。MinIO 控制台地址为
+该命令会启动 API、Celery Worker、PostgreSQL/pgvector、Redis 和 MinIO。容器镜像内置 Tesseract、简体中文和英文识别数据，不依赖 GPU。API 会将文档解析、审核和试运行作业自动派发到 Redis，Worker 从 Redis 消费作业，失败作业最多自动重试 3 次。MinIO 控制台地址为
 `http://127.0.0.1:9001`。
 
 ## 验证

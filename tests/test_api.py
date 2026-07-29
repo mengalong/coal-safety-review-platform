@@ -2,14 +2,22 @@ from io import BytesIO
 
 from docx import Document
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 
 from coal_platform.main import create_app
+from coal_platform.ocr import OCRLine
 from coal_platform.storage import InMemoryObjectStorage
 from coal_platform.store import DemoStore
 
 
-def _client() -> TestClient:
-    return TestClient(create_app(store=DemoStore.seed(), object_storage=InMemoryObjectStorage()))
+def _client(ocr_backend=None) -> TestClient:
+    return TestClient(
+        create_app(
+            store=DemoStore.seed(),
+            object_storage=InMemoryObjectStorage(),
+            ocr_backend=ocr_backend,
+        )
+    )
 
 
 def _login(client: TestClient, login_name: str = "liming") -> dict[str, str]:
@@ -27,6 +35,14 @@ def _docx_content(text: str) -> bytes:
     output = BytesIO()
     document.save(output)
     return output.getvalue()
+
+
+class _FakeOCRBackend:
+    engine_name = "fake-ocr"
+
+    def recognize(self, image_content: bytes) -> list[OCRLine]:
+        assert image_content.startswith(b"\x89PNG")
+        return [OCRLine("防爆标志 Ex db I Mb", 0.95, 10, 10, 100, 20)]
 
 
 def test_logout_revokes_current_access_token() -> None:
@@ -165,6 +181,36 @@ def test_uploaded_document_can_be_parsed_and_queried_as_evidence_blocks() -> Non
         assert blocks.status_code == 200
         assert blocks.json()["data"][0]["content_text"] == "Product model: KBZ-500/1140"
         assert blocks.json()["data"][0]["source_ref"] == "docx:paragraph:1"
+
+
+def test_scanned_pdf_ocr_blocks_include_page_bbox_and_confidence() -> None:
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=100)
+    output = BytesIO()
+    writer.write(output)
+    with _client(ocr_backend=_FakeOCRBackend()) as client:
+        headers = _login(client)
+        admin_headers = _login(client, login_name="admin")
+        task = client.post("/api/v1/tasks", headers=headers, json={}).json()["data"]
+        uploaded = client.post(
+            f"/api/v1/tasks/{task['id']}/files",
+            headers=headers,
+            files={"files": ("scan.pdf", output.getvalue(), "application/pdf")},
+        ).json()["data"]
+        file_item = uploaded["files"][0]
+        job = uploaded["parse_jobs"][0]
+
+        completed = client.post(f"/api/v1/jobs/{job['id']}/run", headers=admin_headers)
+        assert completed.status_code == 200
+        assert completed.json()["data"]["result"]["needs_ocr"] is False
+        blocks = client.get(
+            f"/api/v1/tasks/{task['id']}/files/{file_item['id']}/blocks",
+            headers=headers,
+        ).json()["data"]
+        assert blocks[0]["block_type"] == "ocr_line"
+        assert blocks[0]["content_text"] == "防爆标志 Ex db I Mb"
+        assert blocks[0]["confidence"] == 0.95
+        assert blocks[0]["bbox"]["unit"] == "pt"
 
 
 def test_document_parse_failure_is_visible_and_retryable() -> None:
