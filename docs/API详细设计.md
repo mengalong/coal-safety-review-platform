@@ -283,7 +283,8 @@
 | `GET` | `/api/v1/reports/{report_id}/preview` | 报告内容快照预览 |
 | `POST` | `/api/v1/rounds/{round_id}/reports` | 生成报告 |
 | `POST` | `/api/v1/reports/{report_id}/publish` | 发布报告 |
-| `GET` | `/api/v1/reports/{report_id}/download` | 下载 |
+| `GET` | `/api/v1/reports/{report_id}/artifacts` | 报告文件清单 |
+| `GET` | `/api/v1/reports/{report_id}/artifacts/{artifact_type}/download` | 下载 Word/PDF 文件 |
 
 报告详情应返回：
 

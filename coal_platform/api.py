@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from coal_platform.auth import access_token_expires_at, create_access_token, require_admin, require_user
 from coal_platform.config import get_settings
 from coal_platform.executor_runtime import process_queue_job, run_rule_execution
+from coal_platform.report_renderer import render_docx, render_pdf
 from coal_platform.request_context import get_trace_id
 from coal_platform.rule_engine import FIXED_AUDIT_STAGES, RuleConfigurationError
 from coal_platform.schemas import (
@@ -1060,7 +1061,7 @@ def create_report(payload: ReportCreateRequest, request: Request) -> JSONRespons
 
 
 @reports_router.post("/{report_id}/publish")
-def publish_report(report_id: str, payload: dict, request: Request) -> dict:
+async def publish_report(report_id: str, payload: dict, request: Request) -> dict:
     report = request.app.state.store.get_report(report_id)
     if not report:
         raise HTTPException(status_code=404, detail="report not found")
@@ -1075,6 +1076,14 @@ def publish_report(report_id: str, payload: dict, request: Request) -> dict:
         published = request.app.state.store.publish_report(report_id, data)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=exc.args[0]) from exc
+    if published:
+        content = published.get("content_snapshot") or {}
+        awaitable = (
+            ("word", f"reports/{published['report_no']}.docx", render_docx(content), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            ("pdf", f"reports/{published['report_no']}.pdf", render_pdf(content), "application/pdf"),
+        )
+        for _artifact_type, key, binary, media_type in awaitable:
+            await run_in_threadpool(request.app.state.object_storage.put, key, binary, media_type)
     return _ok(published, "report published")
 
 
