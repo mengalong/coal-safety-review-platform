@@ -1,10 +1,13 @@
 from io import BytesIO
 
+import pytest
 from docx import Document
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 
+from coal_platform.api import _model_connection_error_message
 from coal_platform.main import create_app
+from coal_platform.model_gateway import ModelGatewayError
 from coal_platform.ocr import OCRLine
 from coal_platform.storage import InMemoryObjectStorage
 from coal_platform.store import DemoStore
@@ -436,6 +439,22 @@ def test_admin_can_test_model_connection_and_read_call_audit() -> None:
         logs = client.get("/api/v1/settings/model-call-logs", headers=admin_headers)
         assert logs.status_code == 200
         assert logs.json()["data"][0]["request_id"] == "request-1"
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("MODEL_HTTP_401", "生成有效凭据"),
+        ("MODEL_NETWORK_ERROR", "model-egress 网络"),
+        ("MODEL_HTTP_429", "配额"),
+    ],
+)
+def test_model_connection_errors_provide_actionable_non_secret_guidance(code: str, expected: str) -> None:
+    message = _model_connection_error_message(ModelGatewayError(code, "provider rejected"))
+
+    assert expected in message
+    assert "provider rejected" not in message
+    assert code in message
 
 
 def test_admin_can_manage_categories_templates_and_system_parameters() -> None:

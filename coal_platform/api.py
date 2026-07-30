@@ -64,6 +64,23 @@ def _ok(data, message: str = "success"):
     return {"code": "OK", "message": message, "data": data, "trace_id": get_trace_id()}
 
 
+def _model_connection_error_message(error: ModelGatewayError) -> str:
+    guidance = {
+        "MODEL_HTTP_401": "模型凭据无效、过期或已失效，请在千帆控制台生成有效凭据后使用“轮换密钥”更新",
+        "MODEL_HTTP_403": "模型凭据没有调用权限，请检查千帆账号、模型权限和资源配额",
+        "MODEL_HTTP_404": "模型地址或模型编码不存在，请检查 API 地址是否以 /v2 结尾及模型编码",
+        "MODEL_HTTP_429": "模型调用达到配额或限流，请检查千帆配额并降低并发或稍后重试",
+        "MODEL_TIMEOUT": "模型请求超时，请检查出口网络、代理和模型服务状态",
+        "MODEL_NETWORK_ERROR": "无法访问模型服务，请检查 model-egress 网络、DNS、出口防火墙和 HTTPS 代理",
+        "MODEL_CIRCUIT_OPEN": "模型连续调用失败已触发熔断，请修复凭据或网络后等待熔断恢复",
+        "MODEL_INVALID_RESPONSE": "模型返回格式不符合网关协议，请检查模型地址、模型类型和供应商接口版本",
+        "MODEL_RESPONSE_TOO_LARGE": "模型响应超过平台限制，请缩小请求或调整模型响应配置",
+        "MODEL_CONCURRENCY_LIMIT": "模型并发额度已用尽，请降低并发或等待当前请求完成",
+    }
+    fallback = "模型供应商拒绝请求，请检查模型地址、凭据和模型服务状态"
+    return f"{guidance.get(error.code, fallback)}（错误码：{error.code}）"
+
+
 health_router = APIRouter()
 auth_router = APIRouter(prefix="/auth", tags=["auth"])
 users_router = APIRouter(prefix="/users", tags=["users"], dependencies=[Depends(require_admin)])
@@ -1413,7 +1430,8 @@ def test_model_connection(config_id: str, request: Request) -> dict:
         result = request.app.state.model_gateway.test_connection(config_id, trace_id=get_trace_id())
     except ModelGatewayError as exc:
         status_code = 404 if exc.code == "MODEL_CONFIG_NOT_FOUND" else 409 if exc.code == "MODEL_CONFIG_DISABLED" else 502
-        raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+        detail = {"code": exc.code, "message": _model_connection_error_message(exc)}
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     return _ok(result, "model connection succeeded")
 
 

@@ -370,6 +370,20 @@
 | `MODEL_RESPONSE_TOO_LARGE` | 响应超过安全上限 |
 | `MODEL_CONCURRENCY_LIMIT` | 单模型并发额度已占满 |
 | `MODEL_CIRCUIT_OPEN` | 连续失败达到阈值，熔断恢复窗口尚未结束 |
+
+连通性测试失败时，HTTP 响应的 `detail.message` 返回脱敏后的处理建议，不返回千帆原始响应体、请求头或任何凭据内容。常见错误码的处理方式如下：
+
+| 错误码 | 管理员处理建议 |
+|---|---|
+| `MODEL_HTTP_401` | 在千帆控制台生成有效 IAM/API 凭据，在本页面对对应模型执行“轮换密钥”，再重新测试 |
+| `MODEL_HTTP_403` | 检查账号、模型调用权限、资源配额和区域限制 |
+| `MODEL_HTTP_404` | 检查 API 地址是否为千帆兼容的 `/v2` 地址，以及模型编码是否正确 |
+| `MODEL_HTTP_429` | 检查配额和限流策略，降低并发或稍后重试 |
+| `MODEL_NETWORK_ERROR` | 检查 `model-egress` 网络、DNS、出口防火墙和 HTTPS 代理 |
+| `MODEL_TIMEOUT` | 检查出口链路和供应商服务状态，必要时调整超时参数 |
+| `MODEL_CIRCUIT_OPEN` | 先修复凭据或网络故障，等待熔断恢复后再测试 |
+
+四个生产模型必须分别测试并在模型调用日志中形成成功记录；任一模型返回上述错误码，都不能将生产 UAT 标记为通过。
 2. 只有 `queued`、`pending` 状态的作业可以取消，成功后状态变为 `canceled` 并写入 `finished_at`。
 3. 已取消或已经开始、结束的作业再次取消返回 `409 CONFLICT`；不存在的作业返回 `404 NOT_FOUND`。
 4. `canceled` 是终态，Worker、手工运行和失败重试均不得再次执行该作业。

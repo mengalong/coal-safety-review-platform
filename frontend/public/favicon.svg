@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title>安审智核</title>
+  <path fill="#0f766e" d="M32 4 54 12v17c0 14-8.8 25.7-22 31C18.8 54.7 10 43 10 29V12z"/>
+  <path fill="#f8fafc" d="m32 13 14 5v11c0 9.4-5.2 17.5-14 22-8.8-4.5-14-12.6-14-22V18z"/>
+  <path fill="#334155" d="M21 34h22l-3.2 8H24.2zM24 27h16l2 5H22zM26 20h12l1.5 5h-15z"/>
+  <circle cx="32" cy="17" r="2.5" fill="#f59e0b"/>
+</svg>
