@@ -7,6 +7,7 @@ from hashlib import sha256
 from threading import RLock
 from uuid import uuid4
 
+from coal_platform.file_classification import require_audit_ready, trigger_file_types
 from coal_platform.parse_quality import evaluate_parse_quality
 from coal_platform.rule_engine import (
     DEFAULT_RULE_PACKS,
@@ -691,6 +692,8 @@ class DemoStore:
                     "storage_key": item["storage_key"],
                     "status": "uploaded",
                     "version_no": 1,
+                    "is_required": item.get("is_required", False),
+                    "is_applicable": item.get("is_applicable", True),
                 }
                 created.append(record)
             task["files"].extend(created)
@@ -732,6 +735,7 @@ class DemoStore:
                 content_type=payload.get("content_type"), file_size=payload["file_size"],
                 sha256=payload["sha256"], storage_key=payload["storage_key"],
                 status="uploaded", parse_summary={}, version_no=file_item.get("version_no", 1) + 1,
+                is_required=payload.get("is_required", False), is_applicable=True,
             )
             task["updated_at"] = _now()
             return deepcopy(file_item)
@@ -1494,7 +1498,7 @@ class DemoStore:
             packs = [item for item in self.rule_packs.values() if item.get("status") == "published"]
             if selected_pack_ids:
                 packs = [item for item in packs if item["id"] in selected_pack_ids]
-            file_types = [item.get("file_type", "other") for item in task.get("files", [])]
+            file_types = trigger_file_types(task.get("files", []))
             confirmed_standard_count = sum(1 for item in round_item.get("standards", []) if isinstance(item, dict) and item.get("status") == "confirmed")
             candidate_rules = []
             skipped_packs = []
@@ -1748,6 +1752,11 @@ class DemoStore:
             )
             if active_run:
                 return deepcopy(active_run)
+
+            require_audit_ready(
+                matching_task.get("files", []),
+                rules_confirmed=bool(matching_round.get("rules")),
+            )
 
             run_id = str(uuid4())
             run = {

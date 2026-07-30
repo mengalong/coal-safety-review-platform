@@ -49,6 +49,38 @@ def _store(database_path: Path) -> tuple[SqlAlchemyStore, sessionmaker[Session]]
     return store, factory
 
 
+def _add_parsed_required_files(
+    store: SqlAlchemyStore,
+    task: dict,
+    reviewer_id: str,
+    file_types: tuple[str, ...] = ("product_drawing", "product_manual", "controlled_component_list"),
+) -> None:
+    definitions = {
+        "product_drawing": ("产品图纸.txt", "drawing", "1" * 64),
+        "product_manual": ("使用说明书.txt", "manual", "2" * 64),
+        "controlled_component_list": ("受控件明细表.csv", "name,model", "3" * 64),
+    }
+    for file_type in file_types:
+        file_name, content, digest = definitions[file_type]
+        created = store.add_task_files(task["id"], [{
+            "file_name": file_name,
+            "file_type": file_type,
+            "content_type": "text/plain",
+            "file_size": len(content),
+            "sha256": digest,
+            "storage_key": f"tasks/{task['id']}/{file_name}",
+            "is_required": True,
+            "_operator_user_id": reviewer_id,
+        }])
+        assert created
+        parsed = store.complete_task_file_parse(
+            created[0]["id"],
+            [{"page_no": 1, "block_type": "line", "content_text": content, "confidence": 0.99}],
+            {"parser": "text", "page_count": 1},
+        )
+        assert parsed and parsed["status"] == "parsed"
+
+
 def test_database_store_persists_task_round_file_and_operation_logs(tmp_path: Path) -> None:
     database_path = tmp_path / "store.db"
     store, factory = _store(database_path)
@@ -214,8 +246,9 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
     assert reviewer
 
     task = store.create_task({"owner_user_id": reviewer["id"], "_operator_user_id": reviewer["id"]})
+    _add_parsed_required_files(store, task, reviewer["id"])
     snapshot = store.assemble_round_rules(task["current_round_id"], {})
-    assert snapshot and len(snapshot["rules"]) == 2
+    assert snapshot and len(snapshot["rules"]) == 4
     run = store.start_audit(
         task["current_round_id"],
         {"_operator_user_id": reviewer["id"], "_trace_id": "audit-start-test"},
@@ -229,7 +262,7 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
         assert session.scalar(select(func.count()).select_from(AuditRun)) == 1
         assert session.scalar(select(func.count()).select_from(QueueJob)) == 1
     executions = store.list_rule_executions(task["current_round_id"])
-    assert executions and len(executions) == 2
+    assert executions and len(executions) == 4
     assert executions[0]["status"] == "pending"
     local = store.local_rerun(
         task["current_round_id"],
@@ -262,6 +295,7 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
                 "issue_code": "MODEL-INCONSISTENT",
                 "title": "产品型号不一致",
                 "description": "说明书与图纸型号不一致",
+                "severity": "一般",
                 "customer_evidence": {"page_no": 3, "excerpt_text": "型号为 A"},
                 "standard_evidence": {"excerpt_text": "型号应保持一致"},
             }},
@@ -283,6 +317,11 @@ def test_database_store_starts_audit_and_queues_job(tmp_path: Path) -> None:
             "standard_evidence": {"excerpt_text": "型号应保持一致"},
         }}},
     )
+    for execution in executions[2:]:
+        store.record_execution_attempt(
+            execution["id"],
+            {"status": "succeeded", "output_payload": {"result": "pass"}},
+        )
     runs = store.list_audit_runs(task["current_round_id"])
     assert runs and runs[-1]["status"] == "completed"
     issues = store.list_issues(task["current_round_id"])
@@ -377,16 +416,23 @@ def test_dynamic_audit_item_executes_real_ai_contract_with_model_snapshot(tmp_pa
     model = store.create_model_config({"provider_code": "qianfan", "provider_name": "百度千帆", "base_url": "https://qianfan.test/v2", "model_code": "deepseek-v4-pro", "model_kind": "text", "api_key": "provider-secret"})
     assert model
     task = store.create_task({"owner_user_id": reviewer["id"], "_operator_user_id": reviewer["id"]})
-    files = store.add_task_files(task["id"], [{"file_name": "manual.txt", "file_type": "txt", "content_type": "text/plain", "file_size": 16, "sha256": "e" * 64, "storage_key": f"tasks/{task['id']}/manual.txt", "_operator_user_id": reviewer["id"]}])
+    files = store.add_task_files(task["id"], [{"file_name": "manual.txt", "file_type": "product_manual", "content_type": "text/plain", "file_size": 16, "sha256": "e" * 64, "storage_key": f"tasks/{task['id']}/manual.txt", "is_required": True, "_operator_user_id": reviewer["id"]}])
     assert files
     parsed = store.complete_task_file_parse(files[0]["id"], [{"page_no": 1, "block_type": "line", "content_text": "额定功率 55 kW", "confidence": 0.98, "source_ref": "txt:line:1"}], {"parser": "text", "page_count": 1})
     assert parsed and parsed["parse_summary"]["quality_review"]["status"] == "not_required"
+    _add_parsed_required_files(
+        store,
+        task,
+        reviewer["id"],
+        ("product_drawing", "controlled_component_list"),
+    )
     standard_version = store.list_standards()[0]["versions"][0]
     selected = store.add_standard_to_round(task["current_round_id"], {"standard_version_id": standard_version["id"], "_operator_user_id": reviewer["id"]})
     assert selected
     store.confirm_round_standard(task["current_round_id"], selected["id"], {"_operator_user_id": reviewer["id"]})
     dynamic = store.list_dynamic_items(task["current_round_id"])[0]
     store.decide_dynamic_item(task["current_round_id"], dynamic["id"], "applicable", {"reason": "适用"})
+    store.assemble_round_rules(task["current_round_id"], {})
     started = store.start_audit(task["current_round_id"], {"_operator_user_id": reviewer["id"], "_trace_id": "dynamic-ai"})
     assert started
     execution = next(item for item in store.list_rule_executions(task["current_round_id"]) if item["dynamic_item_id"] == dynamic["id"])

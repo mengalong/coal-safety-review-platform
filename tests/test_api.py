@@ -40,6 +40,37 @@ def _docx_content(text: str) -> bytes:
     return output.getvalue()
 
 
+def _prepare_required_files(client: TestClient, task: dict, headers: dict[str, str]) -> dict:
+    uploaded = client.post(
+        f"/api/v1/tasks/{task['id']}/files",
+        headers=headers,
+        files=[
+            ("files", ("DSJ120产品图纸.txt", b"drawing title DSJ120", "text/plain")),
+            ("files", ("DSJ120使用说明书.txt", b"product manual DSJ120", "text/plain")),
+            ("files", ("DSJ120受控件明细表.csv", b"name,model\nmotor,YBK3", "text/csv")),
+        ],
+    )
+    assert uploaded.status_code == 200
+    data = uploaded.json()["data"]
+    assert {item["file_type"] for item in data["files"]} == {
+        "product_drawing",
+        "product_manual",
+        "controlled_component_list",
+    }
+    admin_headers = _login(client, login_name="admin")
+    for job in data["parse_jobs"]:
+        completed = client.post(f"/api/v1/jobs/{job['id']}/run", headers=admin_headers)
+        assert completed.status_code == 200
+        assert completed.json()["data"]["status"] == "succeeded"
+    assembled = client.post(
+        f"/api/v1/rounds/{task['current_round_id']}/rules/assemble",
+        headers=headers,
+        json={},
+    )
+    assert assembled.status_code == 200
+    return data
+
+
 class _FakeOCRBackend:
     engine_name = "fake-ocr"
 
@@ -347,6 +378,16 @@ def test_start_audit_updates_task_and_round_status() -> None:
         task = created.json()["data"]
         round_id = task["current_round_id"]
 
+        blocked = client.post(f"/api/v1/rounds/{round_id}/audit/start", headers=headers)
+        assert blocked.status_code == 409
+        assert blocked.json()["detail"]["code"] == "AUDIT_NOT_READY"
+        assert len(blocked.json()["detail"]["readiness"]["blockers"]) == 4
+
+        _prepare_required_files(client, task, headers)
+        readiness = client.get(f"/api/v1/rounds/{round_id}/audit/readiness", headers=headers)
+        assert readiness.status_code == 200
+        assert readiness.json()["data"]["can_start"] is True
+
         started = client.post(f"/api/v1/rounds/{round_id}/audit/start", headers=headers)
 
         assert started.status_code == 202
@@ -365,7 +406,7 @@ def test_admin_can_run_a_rule_execution_and_create_issue() -> None:
     with _client() as client:
         reviewer_headers = _login(client)
         created = client.post("/api/v1/tasks", headers=reviewer_headers, json={}).json()["data"]
-        client.post(f"/api/v1/rounds/{created['current_round_id']}/rules/assemble", headers=reviewer_headers, json={})
+        _prepare_required_files(client, created, reviewer_headers)
         started = client.post(f"/api/v1/rounds/{created['current_round_id']}/audit/start", headers=reviewer_headers)
         assert started.status_code == 202
         executions = client.get(
@@ -939,6 +980,7 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
         assert deleted.json()["data"]["status"] == "deleted"
         assert client.post(f"/api/v1/tasks/{task['id']}/files/{file_id}/retry-parse", headers=headers).status_code == 404
 
+        _prepare_required_files(client, task, headers)
         assembled = client.post(
             f"/api/v1/rounds/{task['current_round_id']}/rules/assemble",
             headers=headers,
@@ -947,7 +989,7 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
         assert assembled.status_code == 200
         snapshot = assembled.json()["data"]
         assert snapshot["locked"] is True
-        assert len(snapshot["rules"]) == 3
+        assert len(snapshot["rules"]) == 4
         assert {item["source_type"] for item in snapshot["rules"]} == {"global", "file_trigger"}
 
         started = client.post(
@@ -960,7 +1002,7 @@ def test_rule_packs_and_round_rule_snapshot_workflow() -> None:
             headers=headers,
         )
         assert executions.status_code == 200
-        assert len(executions.json()["data"]) == 3
+        assert len(executions.json()["data"]) == 4
         execution_id = executions.json()["data"][0]["id"]
         execution = client.get(f"/api/v1/rule-executions/{execution_id}", headers=headers)
         attempts = client.get(f"/api/v1/rule-executions/{execution_id}/attempts", headers=headers)

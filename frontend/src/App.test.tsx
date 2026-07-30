@@ -108,11 +108,13 @@ describe('production application', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/auth/me')) return jsonResponse({ code: 'OK', data: { id: 'u1', login_name: 'reviewer', display_name: '审核员', role: 'reviewer', status: 'active' } })
-      if (url.endsWith('/tasks/t1')) return jsonResponse({ code: 'OK', data: { id: 't1', task_no: 'TASK-1', customer_name: '测试企业', product_name: '输送机', product_model: 'DSJ120', current_round_no: 1, current_round_id: 'r1', status: 'draft', files: [{ id: 'f1', file_name: '说明书.doc', file_type: 'doc', version_no: 1, status: 'parse_failed', parse_summary: { error: { code: 'DOCUMENT_PARSE_FAILED', message: 'unsupported document type: doc' } } }] } })
+      if (url.endsWith('/tasks/t1')) return jsonResponse({ code: 'OK', data: { id: 't1', task_no: 'TASK-1', customer_name: '测试企业', product_name: '输送机', product_model: 'DSJ120', current_round_no: 1, current_round_id: 'r1', status: 'draft', files: [{ id: 'f1', file_name: '说明书.doc', file_type: 'product_manual', version_no: 1, status: 'parse_failed', parse_summary: { error: { code: 'DOCUMENT_PARSE_FAILED', message: 'unsupported document type: doc' } } }] } })
       return jsonResponse({ code: 'OK', data: [] })
     })
     const view = renderApp('/tasks/t1?tab=files')
     expect(await screen.findByText(/PDF、DOCX、XLSX/)).toBeInTheDocument()
+    expect(screen.getByLabelText('审核任务发起进度')).toBeInTheDocument()
+    expect(screen.getByLabelText('审核资料完整性')).toBeInTheDocument()
     expect(view.container.querySelector('input[name="files"]')).toHaveAttribute('accept', '.pdf,.docx,.xlsx,.xlsm,.txt,.md,.csv')
     fireEvent.mouseEnter(screen.getByText('解析失败'))
     expect(screen.getByRole('tooltip')).toHaveTextContent('不支持 DOC 文件格式，请转换为 DOCX 或 PDF 后重新上传。')
@@ -124,7 +126,7 @@ describe('production application', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, options?: RequestInit) => {
       const url = String(input); requests.push({ url, options })
       if (url.endsWith('/auth/me')) return jsonResponse({ code: 'OK', data: { id: 'u1', login_name: 'reviewer', display_name: '审核员', role: 'reviewer', status: 'active' } })
-      if (url.endsWith('/tasks/t1') && !options?.method) return jsonResponse({ code: 'OK', data: { id: 't1', task_no: 'TASK-1', customer_name: '测试企业', product_name: '输送机', product_model: 'DSJ120', current_round_no: 1, current_round_id: 'r1', status: 'draft', files: [{ id: 'f1', file_name: '说明书.doc', file_type: 'doc', version_no: 1, status: 'parse_failed', parse_summary: { error: { message: 'unsupported document type: doc' } } }] } })
+      if (url.endsWith('/tasks/t1') && !options?.method) return jsonResponse({ code: 'OK', data: { id: 't1', task_no: 'TASK-1', customer_name: '测试企业', product_name: '输送机', product_model: 'DSJ120', current_round_no: 1, current_round_id: 'r1', status: 'draft', files: [{ id: 'f1', file_name: '说明书.doc', file_type: 'product_manual', version_no: 1, status: 'parse_failed', parse_summary: { error: { message: 'unsupported document type: doc' } } }] } })
       if (url.endsWith('/tasks/t1/files/f1')) return jsonResponse({ code: 'OK', data: { id: 'f1' } })
       return jsonResponse({ code: 'OK', data: [] })
     })
@@ -142,6 +144,24 @@ describe('production application', () => {
     expect(await screen.findByRole('heading', { name: '删除技术资料' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
     await waitFor(() => expect(requests.some(item => item.url.endsWith('/tasks/t1/files/f1') && item.options?.method === 'DELETE')).toBe(true))
+  })
+
+  it('guides task launch and blocks audit until mandatory files are parsed', async () => {
+    sessionStorage.setItem('coal_access_token', 'token')
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/auth/me')) return jsonResponse({ code: 'OK', data: { id: 'u1', login_name: 'reviewer', display_name: '审核员', role: 'reviewer', status: 'active' } })
+      if (url.endsWith('/tasks/t1')) return jsonResponse({ code: 'OK', data: { id: 't1', task_no: 'TASK-1', customer_name: '测试企业', product_name: '输送机', product_model: 'DSJ120', current_round_no: 1, current_round_id: 'r1', status: 'draft', rounds: [{ id: 'r1', rules: [] }], files: [{ id: 'drawing', file_name: '产品图纸.pdf', file_type: 'product_drawing', status: 'parsed' }, { id: 'manual', file_name: '使用说明书.docx', file_type: 'product_manual', status: 'parse_pending' }] } })
+      if (url.endsWith('/rounds/r1/audit/readiness')) return jsonResponse({ code: 'OK', data: { can_start: false, rules_confirmed: false, blockers: [{ code: 'REQUIRED_FILE_NOT_PARSED', file_type: 'product_manual', message: '必选资料尚未解析成功：使用说明书' }, { code: 'REQUIRED_FILE_MISSING', file_type: 'controlled_component_list', message: '缺少必选资料：受控件明细表' }, { code: 'RULES_NOT_CONFIRMED', message: '审核规则尚未确认' }] } })
+      if (url.endsWith('/rounds/r1/audit/progress')) return jsonResponse({ code: 'OK', data: { status: 'draft', progress_percent: 0 } })
+      return jsonResponse({ code: 'OK', data: [] })
+    })
+    renderApp('/tasks/t1?tab=audit')
+    expect(await screen.findByLabelText('审核任务发起进度')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /上传资料/ })).toHaveAttribute('aria-current', 'step')
+    expect(await screen.findByRole('button', { name: '启动审核' })).toBeDisabled()
+    expect(screen.getByText('缺少必选资料：受控件明细表')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '确认审核规则' })).toBeEnabled()
   })
 
   it('requires explicit confirmation before a local issue rerun', async () => {

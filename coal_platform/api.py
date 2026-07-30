@@ -14,6 +14,7 @@ from coal_platform.auth import access_token_expires_at, create_access_token, req
 from coal_platform.config import get_settings
 from coal_platform.document_parser import MAX_FILE_BYTES, DocumentParseError, render_pdf_region
 from coal_platform.executor_runtime import process_queue_job, run_rule_execution
+from coal_platform.file_classification import AuditReadinessError, assess_audit_readiness, classify_file_name
 from coal_platform.model_gateway import ModelGatewayError
 from coal_platform.observability import render_metrics
 from coal_platform.report_renderer import render_docx, render_pdf
@@ -149,6 +150,13 @@ def _queue_file_parse(request: Request, task_id: str, file_id: str) -> dict | No
         if dispatch:
             job.update(dispatch)
     return job
+
+
+def _audit_readiness(task: dict, round_item: dict) -> dict:
+    return assess_audit_readiness(
+        task.get("files", []),
+        rules_confirmed=any(item.get("enabled", True) for item in round_item.get("rules", [])),
+    )
 
 
 @health_router.get("/healthz")
@@ -311,7 +319,7 @@ async def upload_files(task_id: str, request: Request, files: Annotated[list[Upl
             file_records.append(
                 {
                     "file_name": file_name,
-                    "file_type": Path(file_name).suffix.lower().lstrip(".") or "other",
+                    **classify_file_name(file_name),
                     "content_type": upload.content_type,
                     "file_size": len(content),
                     "sha256": sha256(content).hexdigest(),
@@ -369,7 +377,7 @@ async def replace_file(task_id: str, file_id: str, request: Request, file: Annot
     storage_key = f"tasks/{task_id}/{uuid4().hex}/{file_name}"
     await run_in_threadpool(request.app.state.object_storage.put, storage_key, content, file.content_type)
     payload = {
-        "file_name": file_name, "file_type": Path(file_name).suffix.lower().lstrip(".") or "other",
+        "file_name": file_name, **classify_file_name(file_name),
         "content_type": file.content_type, "file_size": len(content), "sha256": sha256(content).hexdigest(),
         "storage_key": storage_key, **_operation_context(request),
     }
@@ -709,13 +717,31 @@ def start_audit(round_id: str, request: Request) -> JSONResponse:
     if not task:
         raise HTTPException(status_code=404, detail="task not found")
     _ensure_task_access(request, task)
-    run = request.app.state.store.start_audit(round_id, _operation_context(request))
+    try:
+        run = request.app.state.store.start_audit(round_id, _operation_context(request))
+    except AuditReadinessError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "AUDIT_NOT_READY", "message": str(exc), "readiness": exc.readiness},
+        ) from exc
     if not run:
         raise HTTPException(status_code=404, detail="round not found")
     dispatch = _dispatch_job_if_enabled(request, run.get("job_id"))
     if dispatch:
         run["dispatch"] = dispatch
     return JSONResponse(status_code=202, content=_ok(run, "audit queued"))
+
+
+@rounds_router.get("/{round_id}/audit/readiness")
+def get_audit_readiness(round_id: str, request: Request) -> dict:
+    round_item = request.app.state.store.get_round(round_id)
+    if not round_item:
+        raise HTTPException(status_code=404, detail="round not found")
+    task = request.app.state.store.get_task(round_item.get("task_id", ""))
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    _ensure_task_access(request, task)
+    return _ok(_audit_readiness(task, round_item))
 
 
 @rounds_router.post("/{round_id}/audit/local-rerun")

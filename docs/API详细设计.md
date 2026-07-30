@@ -133,6 +133,11 @@
 | `GET` | `/api/v1/tasks/{task_id}/files/{file_id}/pages/{page_no}/region` | 获取 PDF 区域证据图 |
 | `POST` | `/api/v1/tasks/{task_id}/files/{file_id}/mark-unavailable` | 标记无法解析继续 |
 
+上传和替换文件时，平台按文件名自动设置 `file_type`：`product_drawing`（产品图纸）、
+`product_manual`（使用说明书）、`controlled_component_list`（受控件明细表）、
+`enterprise_standard`（企业标准）或 `other`（其他资料）。前三类为启动审核必选资料，企业标准可选；
+审核人员可以通过 `PATCH` 修正误分类。文件扩展名仍从原文件名解析，不受业务分类影响。
+
 上传响应：
 
 ```json
@@ -278,10 +283,15 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| `GET` | `/api/v1/rounds/{round_id}/audit/readiness` | 查询必选资料解析和审核规则确认状态 |
 | `POST` | `/api/v1/rounds/{round_id}/audit/start` | 启动完整审核 |
 | `POST` | `/api/v1/rounds/{round_id}/audit/rerun` | 整轮重跑 |
 | `POST` | `/api/v1/rounds/{round_id}/audit/local-rerun` | 局部重跑 |
 | `POST` | `/api/v1/rule-executions/{execution_id}/rerun` | 单规则重跑 |
+
+`audit/start` 仅在产品图纸、使用说明书、受控件明细表均存在且状态为 `parsed`，并且本轮审核规则已确认
+（已生成规则快照）时接受请求。条件不满足返回 HTTP `409`、错误码 `AUDIT_NOT_READY`，`detail.readiness.blockers`
+列出缺失资料、未解析资料或未确认规则的具体原因。
 | `GET` | `/api/v1/rounds/{round_id}/audit-runs` | 审核运行列表 |
 | `GET` | `/api/v1/rule-executions/{execution_id}` | 执行详情 |
 | `GET` | `/api/v1/rule-executions/{execution_id}/attempts` | 尝试记录 |

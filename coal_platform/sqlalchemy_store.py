@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from coal_platform.auth import hash_password, verify_password
 from coal_platform.config import get_settings
+from coal_platform.file_classification import require_audit_ready, trigger_file_types
 from coal_platform.model_security import ModelSecretCipher
 from coal_platform.models import (
     AuditIssue,
@@ -1612,9 +1613,8 @@ class SqlAlchemyStore(DemoStore):
             if selected_ids:
                 pack_query = pack_query.where(RulePack.id.in_(selected_ids))
             packs = session.scalars(pack_query.order_by(RulePack.stage_code, RulePack.pack_code)).all()
-            file_types = list(
-                session.scalars(select(TaskFile.file_type).where(TaskFile.task_id == task.id))
-            )
+            task_files = list(session.scalars(select(TaskFile).where(TaskFile.task_id == task.id)))
+            file_types = trigger_file_types([self._file_dict(item) for item in task_files])
             confirmed_standard_count = session.scalar(
                 select(func.count(RoundStandard.id)).where(
                     RoundStandard.round_id == round_item.id,
@@ -2168,6 +2168,8 @@ class SqlAlchemyStore(DemoStore):
                     sha256=item["sha256"],
                     version_no=1,
                     status="uploaded",
+                    is_required=item.get("is_required", False),
+                    is_applicable=item.get("is_applicable", True),
                 )
                 session.add(file_item)
                 session.flush()
@@ -2475,6 +2477,8 @@ class SqlAlchemyStore(DemoStore):
                 item.version_no += 1
                 item.status = "uploaded"
                 item.parse_summary = {}
+                item.is_required = payload.get("is_required", False)
+                item.is_applicable = True
                 for block in session.scalars(select(ParsedBlock).where(ParsedBlock.file_id == item.id)):
                     session.delete(block)
                 self._cancel_pending_file_parse_jobs(session, item.id)
@@ -2587,6 +2591,18 @@ class SqlAlchemyStore(DemoStore):
             )
             if active_run:
                 return self._audit_run_dict(active_run)
+
+            files = list(session.scalars(select(TaskFile).where(TaskFile.task_id == task.id)))
+            rules_confirmed = bool(session.scalar(
+                select(func.count(RoundRule.id)).where(
+                    RoundRule.round_id == round_item.id,
+                    RoundRule.enabled.is_(True),
+                )
+            ))
+            require_audit_ready(
+                [self._file_dict(item) for item in files],
+                rules_confirmed=rules_confirmed,
+            )
 
             latest_run_no = session.scalar(select(func.max(AuditRun.run_no)).where(AuditRun.round_id == round_item.id)) or 0
             audit_run = AuditRun(round_id=round_item.id, run_no=latest_run_no + 1, status="queued")

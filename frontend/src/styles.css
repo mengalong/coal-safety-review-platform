@@ -125,6 +125,18 @@ tbody tr:hover td { background: #f8faff; }
 .tabs button { flex: 0 0 auto; height: 43px; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; cursor: pointer; }
 .tabs button.active { color: var(--brand); border-bottom-color: var(--brand); font-weight: 650; }
 .workspace-tabs { margin-bottom: 18px; padding: 0 15px; background: #fff; }
+.launch-guide { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0 0 14px; padding: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: #fff; list-style: none; }
+.launch-guide li { position: relative; min-width: 0; border-right: 1px solid var(--border); }
+.launch-guide li:last-child { border-right: 0; }
+.launch-guide button { width: 100%; min-height: 72px; display: grid; grid-template-columns: 24px minmax(0, 1fr); grid-template-rows: auto auto; align-content: center; column-gap: 9px; padding: 10px 13px; border: 0; color: var(--muted); background: transparent; text-align: left; cursor: pointer; }
+.launch-guide button > span { grid-row: 1 / 3; align-self: center; display: grid; place-items: center; color: var(--weak); }
+.launch-guide button svg { width: 19px; height: 19px; }
+.launch-guide button small { color: var(--weak); font-size: 10px; }
+.launch-guide button strong { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.launch-guide .complete button > span { color: var(--success); }
+.launch-guide .complete button strong { color: var(--text); }
+.launch-guide .current { box-shadow: inset 0 -3px var(--brand); background: #f5f8ff; }
+.launch-guide .current button > span, .launch-guide .current button strong { color: var(--brand); }
 .breadcrumb { margin-bottom: 10px; color: var(--weak); }
 .breadcrumb a { color: var(--brand); }
 .workspace-grid, .detail-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, .7fr); gap: 18px; align-items: start; }
@@ -139,6 +151,16 @@ tbody tr:hover td { background: #f8faff; }
 .progress { min-width: 100px; height: 6px; overflow: hidden; border-radius: 4px; background: #e4eaec; }
 .progress > span { display: block; height: 100%; background: var(--brand); }
 .upload-inline { display: flex; align-items: center; gap: 9px; }
+.file-requirements { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin-bottom: 18px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--border); }
+.file-requirements > div { min-width: 0; min-height: 76px; display: grid; grid-template-columns: 22px minmax(0, 1fr); grid-template-rows: auto auto; align-content: center; column-gap: 9px; padding: 12px; background: #fff; }
+.file-requirements svg { grid-row: 1 / 3; align-self: center; width: 18px; height: 18px; color: var(--weak); }
+.file-requirements span { min-width: 0; }
+.file-requirements strong, .file-requirements small { display: block; overflow-wrap: anywhere; }
+.file-requirements small { margin-top: 2px; color: var(--weak); font-size: 10px; }
+.file-requirements em { color: var(--weak); font-size: 11px; font-style: normal; }
+.file-requirements .ready svg, .file-requirements .ready em { color: var(--success); }
+.file-requirements .processing svg, .file-requirements .processing em { color: var(--warning); }
+.file-category-select { min-width: 150px; min-height: 34px; padding: 5px 8px; font-size: 12px; }
 .file-actions { display: flex; align-items: center; gap: 11px; white-space: nowrap; }
 .file-actions button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; border: 0; color: var(--brand); background: transparent; cursor: pointer; font-weight: 600; }
 .file-actions button svg { width: 15px; height: 15px; }
@@ -176,6 +198,9 @@ tbody tr:hover td { background: #f8faff; }
 .form-error, .notice { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid #e2b9b5; border-radius: 4px; color: var(--danger); background: #fff6f5; }
 .notice.success { color: var(--success); border-color: #b8d8c7; background: #f2faf6; }
 .notice.info { color: var(--brand-dark); border-color: #c6d1ff; background: #f4f7ff; }
+.launch-blockers { margin: -4px 0 16px; padding: 13px 15px; border: 1px solid #e9cfaa; border-radius: 5px; color: #80541c; background: #fff9ef; }
+.launch-blockers ul { display: flex; flex-wrap: wrap; gap: 5px 22px; margin: 7px 0 0; padding-left: 18px; }
+.launch-blockers li { font-size: 12px; }
 .security-panel { max-width: 760px; }
 .modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 18px; background: rgb(15 29 37 / 48%); }
 .modal { width: min(100%, 720px); max-height: calc(100vh - 36px); overflow: auto; border-radius: 7px; background: #fff; box-shadow: 0 20px 60px rgb(15 29 37 / 24%); }
@@ -227,6 +252,8 @@ tbody tr:hover td { background: #f8faff; }
   .metric-band { grid-template-columns: repeat(2, 1fr); }
   .workspace-grid, .detail-grid { grid-template-columns: 1fr; }
   .review-layout { grid-template-columns: minmax(190px, .5fr) minmax(0, 1.5fr); }
+  .launch-guide { grid-template-columns: repeat(5, minmax(130px, 1fr)); overflow-x: auto; }
+  .file-requirements { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 760px) {
@@ -253,6 +280,7 @@ tbody tr:hover td { background: #f8faff; }
   .model-detail-grid .wide { grid-column: auto; }
   .span-2 { grid-column: auto; }
   .review-layout { display: block; }
+  .file-requirements { grid-template-columns: 1fr 1fr; }
   .issue-queue { max-height: 240px; overflow: auto; border-right: 0; border-bottom: 1px solid var(--border); }
   .evidence-columns { grid-template-columns: 1fr; }
   .login-page { grid-template-columns: 1fr; }
@@ -267,6 +295,7 @@ tbody tr:hover td { background: #f8faff; }
   .header-actions { gap: 3px; }
   .page-head .btn { flex: 1 1 auto; }
   .login-brand { min-height: 190px; }
+  .file-requirements { grid-template-columns: 1fr; }
 }
 
 @media print {
