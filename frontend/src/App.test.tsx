@@ -118,6 +118,32 @@ describe('production application', () => {
     expect(screen.getByRole('tooltip')).toHaveTextContent('不支持 DOC 文件格式，请转换为 DOCX 或 PDF 后重新上传。')
   })
 
+  it('replaces and deletes an uploaded task file through confirmed actions', async () => {
+    sessionStorage.setItem('coal_access_token', 'token')
+    const requests: Array<{ url: string; options?: RequestInit }> = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, options?: RequestInit) => {
+      const url = String(input); requests.push({ url, options })
+      if (url.endsWith('/auth/me')) return jsonResponse({ code: 'OK', data: { id: 'u1', login_name: 'reviewer', display_name: '审核员', role: 'reviewer', status: 'active' } })
+      if (url.endsWith('/tasks/t1') && !options?.method) return jsonResponse({ code: 'OK', data: { id: 't1', task_no: 'TASK-1', customer_name: '测试企业', product_name: '输送机', product_model: 'DSJ120', current_round_no: 1, current_round_id: 'r1', status: 'draft', files: [{ id: 'f1', file_name: '说明书.doc', file_type: 'doc', version_no: 1, status: 'parse_failed', parse_summary: { error: { message: 'unsupported document type: doc' } } }] } })
+      if (url.endsWith('/tasks/t1/files/f1')) return jsonResponse({ code: 'OK', data: { id: 'f1' } })
+      return jsonResponse({ code: 'OK', data: [] })
+    })
+    renderApp('/tasks/t1?tab=files')
+    fireEvent.click(await screen.findByRole('button', { name: '重新上传' }))
+    const replacement = new File(['replacement'], '说明书.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+    const replacementInput = screen.getByLabelText('替换文件') as HTMLInputElement
+    fireEvent.change(replacementInput, { target: { files: [replacement] } })
+    fireEvent.submit(replacementInput.closest('form')!)
+    await waitFor(() => expect(requests.some(item => item.url.endsWith('/tasks/t1/files/f1') && item.options?.method === 'PUT')).toBe(true))
+    const replaceRequest = requests.find(item => item.url.endsWith('/tasks/t1/files/f1') && item.options?.method === 'PUT')
+    expect(replaceRequest?.options?.body).toBeTruthy()
+    expect(typeof replaceRequest?.options?.body).not.toBe('string')
+    fireEvent.click(await screen.findByRole('button', { name: '删除' }))
+    expect(await screen.findByRole('heading', { name: '删除技术资料' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
+    await waitFor(() => expect(requests.some(item => item.url.endsWith('/tasks/t1/files/f1') && item.options?.method === 'DELETE')).toBe(true))
+  })
+
   it('requires explicit confirmation before a local issue rerun', async () => {
     sessionStorage.setItem('coal_access_token', 'token')
     const requests: Array<{ url: string; options?: RequestInit }> = []

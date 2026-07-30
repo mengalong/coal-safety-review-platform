@@ -139,6 +139,12 @@ tbody tr:hover td { background: #f8faff; }
 .progress { min-width: 100px; height: 6px; overflow: hidden; border-radius: 4px; background: #e4eaec; }
 .progress > span { display: block; height: 100%; background: var(--brand); }
 .upload-inline { display: flex; align-items: center; gap: 9px; }
+.file-actions { display: flex; align-items: center; gap: 11px; white-space: nowrap; }
+.file-actions button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; border: 0; color: var(--brand); background: transparent; cursor: pointer; font-weight: 600; }
+.file-actions button svg { width: 15px; height: 15px; }
+.file-actions button:hover { color: var(--brand-dark); text-decoration: underline; }
+.file-actions button:disabled { color: var(--weak); cursor: not-allowed; text-decoration: none; }
+.file-actions .danger-text { color: var(--danger); }
 .file-format-note { margin-top: 4px !important; color: var(--warning) !important; font-size: 11px; }
 .parse-failure-status { position: relative; display: inline-flex; outline: none; }
 .parse-failure-status:focus-visible { border-radius: 4px; box-shadow: 0 0 0 3px rgb(36 80 255 / 15%); }
@@ -169,6 +175,7 @@ tbody tr:hover td { background: #f8faff; }
 .form-actions { padding-top: 15px; border-top: 1px solid var(--border); }
 .form-error, .notice { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid #e2b9b5; border-radius: 4px; color: var(--danger); background: #fff6f5; }
 .notice.success { color: var(--success); border-color: #b8d8c7; background: #f2faf6; }
+.notice.info { color: var(--brand-dark); border-color: #c6d1ff; background: #f4f7ff; }
 .security-panel { max-width: 760px; }
 .modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 18px; background: rgb(15 29 37 / 48%); }
 .modal { width: min(100%, 720px); max-height: calc(100vh - 36px); overflow: auto; border-radius: 7px; background: #fff; box-shadow: 0 20px 60px rgb(15 29 37 / 24%); }
