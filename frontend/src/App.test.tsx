@@ -51,13 +51,47 @@ describe('production application', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/auth/me')) return jsonResponse({ code: 'OK', data: { id: 'a1', login_name: 'admin', display_name: '管理员', role: 'admin', status: 'active' } })
-      if (url.endsWith('/settings/models')) return jsonResponse({ code: 'OK', data: [{ id: 'm1', provider_name: '百度千帆', provider_code: 'qianfan', model_code: 'deepseek-v4-pro', model_kind: 'text', credential_version: 2, timeout_seconds: 60, concurrency_limit: 2, status: 'active', api_key: 'must-not-render', encrypted_api_key: 'also-hidden' }] })
+      if (url.endsWith('/settings/models')) return jsonResponse({ code: 'OK', data: [{ id: 'm1', provider_name: '百度千帆', provider_code: 'qianfan', base_url: 'https://qianfan.baidubce.com/v2', model_code: 'deepseek-v4-pro', model_kind: 'text', api_key_configured: true, credential_version: 2, timeout_seconds: 60, concurrency_limit: 2, status: 'active', api_key: 'must-not-render', encrypted_api_key: 'also-hidden' }] })
       return jsonResponse({ code: 'OK', data: [] })
     })
     renderApp('/admin')
     expect(await screen.findByText('deepseek-v4-pro')).toBeInTheDocument()
     expect(screen.queryByText('must-not-render')).not.toBeInTheDocument()
     expect(screen.queryByText('also-hidden')).not.toBeInTheDocument()
+  })
+
+  it('shows model details and a safe manual verification command', async () => {
+    sessionStorage.setItem('coal_access_token', 'token')
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/auth/me')) return jsonResponse({ code: 'OK', data: { id: 'a1', login_name: 'admin', display_name: '管理员', role: 'admin', status: 'active' } })
+      if (url.endsWith('/settings/models')) return jsonResponse({ code: 'OK', data: [{ id: 'm1', provider_name: '百度千帆', provider_code: 'qianfan', base_url: 'https://qianfan.baidubce.com/v2', model_code: 'deepseek-v4-pro', model_kind: 'text', api_key_configured: true, credential_version: 2, timeout_seconds: 60, concurrency_limit: 2, status: 'active' }] })
+      return jsonResponse({ code: 'OK', data: [] })
+    })
+    renderApp('/admin')
+    fireEvent.click(await screen.findByRole('button', { name: '查看详情' }))
+    expect(await screen.findByText('https://qianfan.baidubce.com/v2/chat/completions')).toBeInTheDocument()
+    expect(screen.getByText('已加密配置')).toBeInTheDocument()
+    expect(screen.getByText(/QIANFAN_API_KEY/)).toBeInTheDocument()
+    expect(screen.queryByText('must-not-render')).not.toBeInTheDocument()
+  })
+
+  it('shows progress and the result while testing model connectivity', async () => {
+    sessionStorage.setItem('coal_access_token', 'token')
+    let finishTest: (() => void) | undefined
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/auth/me')) return jsonResponse({ code: 'OK', data: { id: 'a1', login_name: 'admin', display_name: '管理员', role: 'admin', status: 'active' } })
+      if (url.endsWith('/settings/models')) return jsonResponse({ code: 'OK', data: [{ id: 'm1', provider_name: '百度千帆', provider_code: 'qianfan', base_url: 'https://qianfan.baidubce.com/v2', model_code: 'deepseek-v4-pro', model_kind: 'text', api_key_configured: true, credential_version: 2, timeout_seconds: 60, concurrency_limit: 2, status: 'active' }] })
+      if (url.endsWith('/settings/models/m1/test')) return new Promise(resolve => { finishTest = () => resolve(new Response(JSON.stringify({ code: 'OK', data: { reachable: true, model_code: 'deepseek-v4-pro', request_id: 'req-1' } }), { status: 200, headers: { 'Content-Type': 'application/json' } })) })
+      return jsonResponse({ code: 'OK', data: [] })
+    })
+    renderApp('/admin')
+    fireEvent.click(await screen.findByRole('button', { name: '连通性测试' }))
+    expect(await screen.findByRole('progressbar', { name: '模型连通性测试进度' })).toBeInTheDocument()
+    finishTest?.()
+    expect(await screen.findByText('连通性测试通过')).toBeInTheDocument()
+    expect(screen.getByText('req-1')).toBeInTheDocument()
   })
 
   it('clears the session when a protected request returns 401', async () => {
