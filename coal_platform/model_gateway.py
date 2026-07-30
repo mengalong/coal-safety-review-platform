@@ -25,6 +25,15 @@ class ModelTransport(Protocol):
     def close(self) -> None: ...
 
 
+def _bearer_authorization(api_key: str) -> str:
+    token = api_key.strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    if not token:
+        raise ModelGatewayError("MODEL_CONFIG_NOT_FOUND", "model credential is unavailable")
+    return f"Bearer {token}"
+
+
 @dataclass
 class _CircuitState:
     failures: int = 0
@@ -132,7 +141,7 @@ class ModelGateway:
                     response = self.transport.post(
                         f"{config['base_url'].rstrip('/')}{path}",
                         headers={
-                            "Authorization": f"Bearer {config['api_key']}",
+                            "Authorization": _bearer_authorization(config["api_key"]),
                             "Content-Type": "application/json",
                             "X-Request-Id": request_id,
                         },

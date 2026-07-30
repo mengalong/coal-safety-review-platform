@@ -86,6 +86,17 @@ def test_qianfan_chat_uses_bearer_auth_retries_and_audits() -> None:
     assert "provider-secret" not in str(logs)
 
 
+def test_qianfan_chat_does_not_duplicate_stored_bearer_prefix() -> None:
+    store, model = _store_with_model()
+    store.update_model_config(model["id"], {"api_key": "Bearer provider-secret"})
+    transport = FakeTransport([httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})])
+    gateway = ModelGateway(store, transport=transport, settings=Settings())
+
+    gateway.chat(model["id"], [{"role": "user", "content": "test"}])
+
+    assert transport.requests[0]["headers"]["Authorization"] == "Bearer provider-secret"
+
+
 @pytest.mark.parametrize(
     ("kind", "model_code", "response", "expected_key", "expected_path"),
     [
