@@ -103,6 +103,21 @@ describe('production application', () => {
     expect(await screen.findByRole('heading', { name: '登录审核平台' })).toBeInTheDocument()
   })
 
+  it('shows supported file formats and the parse failure reason', async () => {
+    sessionStorage.setItem('coal_access_token', 'token')
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/auth/me')) return jsonResponse({ code: 'OK', data: { id: 'u1', login_name: 'reviewer', display_name: '审核员', role: 'reviewer', status: 'active' } })
+      if (url.endsWith('/tasks/t1')) return jsonResponse({ code: 'OK', data: { id: 't1', task_no: 'TASK-1', customer_name: '测试企业', product_name: '输送机', product_model: 'DSJ120', current_round_no: 1, current_round_id: 'r1', status: 'draft', files: [{ id: 'f1', file_name: '说明书.doc', file_type: 'doc', version_no: 1, status: 'parse_failed', parse_summary: { error: { code: 'DOCUMENT_PARSE_FAILED', message: 'unsupported document type: doc' } } }] } })
+      return jsonResponse({ code: 'OK', data: [] })
+    })
+    const view = renderApp('/tasks/t1?tab=files')
+    expect(await screen.findByText(/PDF、DOCX、XLSX/)).toBeInTheDocument()
+    expect(view.container.querySelector('input[name="files"]')).toHaveAttribute('accept', '.pdf,.docx,.xlsx,.xlsm,.txt,.md,.csv')
+    fireEvent.mouseEnter(screen.getByText('解析失败'))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('不支持 DOC 文件格式，请转换为 DOCX 或 PDF 后重新上传。')
+  })
+
   it('requires explicit confirmation before a local issue rerun', async () => {
     sessionStorage.setItem('coal_access_token', 'token')
     const requests: Array<{ url: string; options?: RequestInit }> = []
