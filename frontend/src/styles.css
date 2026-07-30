@@ -108,6 +108,12 @@ tbody tr:hover td { background: #f8faff; }
 .model-actions button:hover { color: var(--brand-dark); text-decoration: underline; }
 .model-actions button:disabled { color: var(--weak); cursor: not-allowed; text-decoration: none; }
 .model-actions .danger-text { color: var(--danger); }
+.model-status { display: grid; justify-items: start; gap: 5px; }
+.connection-badge { display: inline-flex; align-items: center; min-height: 21px; padding: 1px 7px; border-radius: 4px; font-size: 11px; font-weight: 650; white-space: nowrap; }
+.connection-badge::before { content: ""; width: 5px; height: 5px; margin-right: 5px; border-radius: 50%; background: currentColor; }
+.connection-badge.success { color: var(--success); background: #e8f3ed; }
+.connection-badge.error { color: var(--danger); background: #faeae8; }
+.connection-badge.running { color: var(--warning); background: #fbf0df; }
 .status { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 2px 8px; border-radius: 4px; white-space: nowrap; font-size: 12px; font-weight: 600; }
 .status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .status.success { color: var(--success); background: #e8f3ed; }

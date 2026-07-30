@@ -92,6 +92,7 @@ describe('production application', () => {
     finishTest?.()
     expect(await screen.findByText('连通性测试通过')).toBeInTheDocument()
     expect(screen.getByText('req-1')).toBeInTheDocument()
+    expect(screen.getByText('连通正常')).toBeInTheDocument()
   })
 
   it('clears the session when a protected request returns 401', async () => {
